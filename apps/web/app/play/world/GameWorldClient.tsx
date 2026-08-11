@@ -22,11 +22,15 @@ import {
   chunkKey,
   collidesWithWorld,
   craftInventory,
+  countInventoryItem,
+  getNexusNodes,
   getBlockDefinition,
   getChunkBlock,
   playerAabb,
   raycastVoxels,
   removeFromInventory,
+  normalizeNexusQuestState,
+  repairNexusNode,
   setChunkBlock,
   terrainHeight,
   voxelIndex,
@@ -37,6 +41,7 @@ import {
   type ChunkMeshData,
   type GameWorldMetadata,
   type Inventory,
+  type NexusQuestState,
   type PersistedChunkDelta,
   type PlayerWorldState,
   type RaycastHit,
@@ -80,6 +85,8 @@ type HudState = {
   time: number;
   hit: RaycastHit | null;
   dead: boolean;
+  quest: NexusQuestState;
+  questMessage: string;
 };
 type SaveFunction = () => Promise<void>;
 
@@ -98,6 +105,8 @@ const emptyHud: HudState = {
   time: 0.28,
   hit: null,
   dead: false,
+  quest: normalizeNexusQuestState(),
+  questMessage: "Nexus 信標已同步：尋找節點並修復它們。",
 };
 
 function useWorldId(): string | null {
@@ -242,6 +251,11 @@ export function GameWorldClient() {
           <i style={{ width: `${hud.hunger * 5}%` }} />
         </div>
       </div>
+      <QuestTracker
+        quest={hud.quest}
+        inventory={hud.inventory}
+        message={hud.questMessage}
+      />
       <Hotbar inventory={hud.inventory} selected={hud.selected} />
       <div className="selected-block">
         {
@@ -310,6 +324,30 @@ function Hotbar({
         );
       })}
     </div>
+  );
+}
+
+function QuestTracker({
+  quest,
+  inventory,
+  message,
+}: {
+  quest: NexusQuestState;
+  inventory: Inventory;
+  message: string;
+}) {
+  const crystals = countInventoryItem(inventory, BlockId.GlowCrystal);
+  const complete = quest.repairedNodeIds.length === 3;
+  return (
+    <aside className={`quest-tracker${complete ? " complete" : ""}`}>
+      <strong>{complete ? "NEXUS RESTORED" : "NEXUS BEACON"}</strong>
+      <span>
+        {complete ? "三座節點已重新連線。" : "蒐集輝晶，修復散落的節點。"}
+      </span>
+      <b>輝晶 {crystals} / 3</b>
+      <b>節點 {quest.repairedNodeIds.length} / 3</b>
+      <small>{message}</small>
+    </aside>
   );
 }
 
@@ -440,6 +478,7 @@ function PauseLayer({
           <span>右鍵放置</span>
           <span>1–9 快捷列</span>
           <span>E 背包</span>
+          <span>F 修復 Nexus 節點（3 輝晶）</span>
           <span>F3 Debug</span>
           <span>Esc 暫停</span>
         </div>
@@ -485,6 +524,44 @@ function SelectionOutline({ hit }: { hit: RaycastHit | null }) {
   );
 }
 
+function NexusNodeField({
+  nodes,
+  repairedNodeIds,
+}: {
+  nodes: readonly { id: string; position: readonly [number, number, number] }[];
+  repairedNodeIds: readonly string[];
+}) {
+  return (
+    <group>
+      {nodes.map((node, index) => {
+        const repaired = repairedNodeIds.includes(node.id);
+        const color = ["#e3ad54", "#4cc9e8", "#b87be9"][index] ?? "#62d8e8";
+        return (
+          <group key={node.id} position={node.position}>
+            <mesh position={[0, -0.48, 0]}>
+              <cylinderGeometry args={[1.1, 1.35, 0.35, 6]} />
+              <meshLambertMaterial color={repaired ? "#3f625a" : "#26353b"} />
+            </mesh>
+            <mesh position={[0, 0.48, 0]} rotation={[0.25, 0.55, 0]}>
+              <octahedronGeometry args={[0.48, 0]} />
+              <meshStandardMaterial
+                color={repaired ? "#74e5ac" : color}
+                emissive={repaired ? "#2f9966" : color}
+                emissiveIntensity={repaired ? 1.1 : 0.5}
+              />
+            </mesh>
+            <pointLight
+              color={repaired ? "#70e6af" : color}
+              intensity={repaired ? 1.7 : 0.65}
+              distance={11}
+            />
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
 function WorldRuntime({
   world,
   initialPlayer,
@@ -526,6 +603,9 @@ function WorldRuntime({
     health = useRef(initialPlayer.health),
     hunger = useRef(initialPlayer.hunger),
     dead = useRef(false);
+  const quest = useRef(normalizeNexusQuestState(initialPlayer.quest)),
+    questMessage = useRef("Nexus 信標已同步：尋找節點並修復它們。"),
+    nexusNodes = useMemo(() => getNexusNodes(world.seed), [world.seed]);
   const timeOfDay = useRef(world.timeOfDay),
     hit = useRef<RaycastHit | null>(null),
     accumulator = useRef(0),
@@ -736,6 +816,41 @@ function WorldRuntime({
     [beep, lookup, requestChunk, world.gameMode],
   );
 
+  const repairNearestNode = useCallback(() => {
+    if (!document.pointerLockElement || dead.current) return;
+    const nearest = nexusNodes
+      .filter((node) => !quest.current.repairedNodeIds.includes(node.id))
+      .map((node) => ({
+        node,
+        distance: Math.hypot(
+          position.current.x - node.position[0],
+          position.current.y - node.position[1],
+          position.current.z - node.position[2],
+        ),
+      }))
+      .sort((a, b) => a.distance - b.distance)[0];
+    if (!nearest || nearest.distance > 4.6) {
+      questMessage.current = "沒有可互動的 Nexus 節點；靠近未修復節點後按 F。";
+      return;
+    }
+    const repaired = repairNexusNode(
+      quest.current,
+      inventory.current,
+      nearest.node.id,
+    );
+    if (!repaired) {
+      questMessage.current = `需要 ${3} 顆輝晶才能修復 ${nearest.node.name}。`;
+      beep(92);
+      return;
+    }
+    quest.current = repaired.state;
+    inventory.current = repaired.inventory;
+    questMessage.current = repaired.state.completedAt
+      ? "Nexus 主線完成：三座節點已恢復連線。"
+      : `${nearest.node.name} 已修復。尋找下一座節點。`;
+    beep(660);
+  }, [beep, nexusNodes]);
+
   const save = useCallback(async () => {
     onSaveStatus("saving");
     const now = new Date().toISOString(),
@@ -753,6 +868,7 @@ function WorldRuntime({
         selectedSlot: selected.current,
         gameMode: world.gameMode,
         spawnPoint: safeSpawn,
+        quest: quest.current,
         lastPlayedAt: now,
         revision: initialPlayer.revision,
       };
@@ -826,6 +942,10 @@ function WorldRuntime({
         document.exitPointerLock();
         setInventoryOpen(true);
       }
+      if (event.code === "KeyF") {
+        event.preventDefault();
+        repairNearestNode();
+      }
       if (event.code === "F3") {
         event.preventDefault();
         window.dispatchEvent(new CustomEvent("fangyu-debug"));
@@ -886,6 +1006,7 @@ function WorldRuntime({
     setInventoryOpen,
     setPaused,
     settings.sensitivity,
+    repairNearestNode,
   ]);
 
   useEffect(() => {
@@ -1042,6 +1163,8 @@ function WorldRuntime({
         time: timeOfDay.current,
         hit: hit.current,
         dead: dead.current,
+        quest: quest.current,
+        questMessage: questMessage.current,
       });
     }
   });
@@ -1065,6 +1188,10 @@ function WorldRuntime({
         <ChunkMesh key={`${chunk.key}:${chunk.revision}`} chunk={chunk} />
       ))}
       <SelectionOutline hit={hit.current} />
+      <NexusNodeField
+        nodes={nexusNodes}
+        repairedNodeIds={quest.current.repairedNodeIds}
+      />
       <CreatureField
         player={position}
         paused={paused}
