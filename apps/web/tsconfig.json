@@ -15,20 +15,13 @@
       "@/*": ["./*"]
     }
   },
-  "references": [
-    { "path": "../../packages/domain" },
-    { "path": "../../packages/game-rules" },
-    { "path": "../../packages/ui" },
-    { "path": "../../packages/voxel-engine" }
-  ],
   "include": [
     "next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
-    "**/*.mts",
-    "../../build/sites-vite-plugin.ts"
+    "**/*.mts"
   ],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "vite.config.ts"]
 }
