@@ -4,6 +4,7 @@ import {
   BlockId,
   GENERATION_VERSION,
   addToInventory,
+  terrainHeight,
   type GameMode,
   type GameWorldMetadata,
   type PersistedChunkDelta,
@@ -55,10 +56,18 @@ export function createWorldMetadata(input: {
   renderDistance: number;
 }): GameWorldMetadata {
   const now = new Date().toISOString();
+  const seed = input.seed.trim() || crypto.randomUUID();
+  // Player coordinates describe the feet position. Start just above the
+  // deterministic terrain instead of at a fixed sky height.
+  const spawn: [number, number, number] = [
+    0.5,
+    terrainHeight(seed, 0, 0) + 1.001,
+    0.5,
+  ];
   return {
     id: crypto.randomUUID(),
     name: input.name,
-    seed: input.seed || crypto.randomUUID(),
+    seed,
     gameMode: input.gameMode,
     edition: input.edition,
     gameVersion: input.gameVersion,
@@ -68,7 +77,7 @@ export function createWorldMetadata(input: {
     updatedAt: now,
     lastPlayedAt: now,
     timeOfDay: 0.28,
-    spawn: [0.5, 40, 0.5],
+    spawn,
     worldSettings: {
       renderDistance: input.renderDistance,
       caves: "experimental",
