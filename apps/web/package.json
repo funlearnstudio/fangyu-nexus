@@ -1,0 +1,44 @@
+{
+  "name": "@fangyu/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vinext build",
+    "dev:next": "next dev",
+    "build:vercel": "node ../../scripts/vercel-build.mjs",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@fangyu/domain": "workspace:*",
+    "@fangyu/game-rules": "workspace:*",
+    "@fangyu/ui": "workspace:*",
+    "@fangyu/voxel-engine": "workspace:*",
+    "@react-three/fiber": "9.4.0",
+    "@tanstack/react-query": "5.90.5",
+    "mongodb": "7.1.0",
+    "next": "16.2.6",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "three": "0.180.0",
+    "zustand": "5.0.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@types/three": "0.180.0",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
+    "postcss": "8.5.6",
+    "react-server-dom-webpack": "19.2.6",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3",
+    "vinext": "0.0.50",
+    "vite": "8.0.13",
+    "wrangler": "4.92.0"
+  },
+  "type": "module"
+}

@@ -1,0 +1,8 @@
+node_modules
+dist
+.next
+.turbo
+.wrangler
+pnpm-lock.yaml
+apps/api/drizzle/meta
+docs/minecraft-portal-architecture-spec(1).md

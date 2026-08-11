@@ -1,0 +1,16 @@
+packages:
+  - apps/*
+  - packages/*
+
+storeDir: .pnpm-store
+strictPeerDependencies: false
+autoInstallPeers: true
+
+allowBuilds:
+  "@nestjs/core": false
+  "@scarf/scarf": false
+  esbuild: true
+  msgpackr-extract: false
+  sharp: true
+  unrs-resolver: true
+  workerd: true

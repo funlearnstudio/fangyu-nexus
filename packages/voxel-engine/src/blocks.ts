@@ -1,0 +1,145 @@
+export const BlockId = {
+  Air: 0,
+  Verdant: 1,
+  Loam: 2,
+  Slate: 3,
+  Dune: 4,
+  Timber: 5,
+  Canopy: 6,
+  Water: 7,
+  CopperBloom: 8,
+  GlowCrystal: 9,
+} as const;
+
+export type BlockIdValue = (typeof BlockId)[keyof typeof BlockId];
+
+export interface BlockDefinition {
+  id: BlockIdValue;
+  key: string;
+  name: string;
+  color: readonly [number, number, number];
+  solid: boolean;
+  transparent: boolean;
+  hardness: number;
+  drop: BlockIdValue | null;
+  metadataSchema: "none" | "fluid-level" | "orientation";
+}
+
+export const BLOCKS: readonly BlockDefinition[] = [
+  {
+    id: BlockId.Air,
+    key: "air",
+    name: "空氣",
+    color: [0, 0, 0],
+    solid: false,
+    transparent: true,
+    hardness: 0,
+    drop: null,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.Verdant,
+    key: "verdant",
+    name: "青原塊",
+    color: [0.26, 0.58, 0.31],
+    solid: true,
+    transparent: false,
+    hardness: 0.8,
+    drop: BlockId.Loam,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.Loam,
+    key: "loam",
+    name: "壤土",
+    color: [0.43, 0.29, 0.18],
+    solid: true,
+    transparent: false,
+    hardness: 0.7,
+    drop: BlockId.Loam,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.Slate,
+    key: "slate",
+    name: "深紋岩",
+    color: [0.35, 0.39, 0.42],
+    solid: true,
+    transparent: false,
+    hardness: 1.7,
+    drop: BlockId.Slate,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.Dune,
+    key: "dune",
+    name: "星砂",
+    color: [0.82, 0.69, 0.39],
+    solid: true,
+    transparent: false,
+    hardness: 0.5,
+    drop: BlockId.Dune,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.Timber,
+    key: "timber",
+    name: "琥珀木",
+    color: [0.53, 0.33, 0.16],
+    solid: true,
+    transparent: false,
+    hardness: 1.2,
+    drop: BlockId.Timber,
+    metadataSchema: "orientation",
+  },
+  {
+    id: BlockId.Canopy,
+    key: "canopy",
+    name: "雲葉",
+    color: [0.19, 0.48, 0.3],
+    solid: true,
+    transparent: true,
+    hardness: 0.3,
+    drop: BlockId.Canopy,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.Water,
+    key: "water",
+    name: "清泉",
+    color: [0.16, 0.49, 0.73],
+    solid: false,
+    transparent: true,
+    hardness: 100,
+    drop: null,
+    metadataSchema: "fluid-level",
+  },
+  {
+    id: BlockId.CopperBloom,
+    key: "copper-bloom",
+    name: "銅花礦",
+    color: [0.67, 0.39, 0.25],
+    solid: true,
+    transparent: false,
+    hardness: 2.2,
+    drop: BlockId.CopperBloom,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.GlowCrystal,
+    key: "glow-crystal",
+    name: "輝晶",
+    color: [0.35, 0.82, 0.79],
+    solid: true,
+    transparent: false,
+    hardness: 2.6,
+    drop: BlockId.GlowCrystal,
+    metadataSchema: "none",
+  },
+] as const;
+
+const blocksById = new Map(BLOCKS.map((block) => [block.id, block]));
+
+export function getBlockDefinition(id: number): BlockDefinition {
+  return blocksById.get(id as BlockIdValue) ?? BLOCKS[0]!;
+}

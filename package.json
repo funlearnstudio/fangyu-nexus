@@ -1,0 +1,43 @@
+{
+  "name": "fangyu-nexus",
+  "version": "0.1.0",
+  "private": true,
+  "description": "方域 Nexus — cross-version Minecraft knowledge and tools portal",
+  "type": "module",
+  "packageManager": "pnpm@11.16.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:smoke": "node scripts/dev-smoke.mjs",
+    "build": "node scripts/workspace-task.mjs build",
+    "build:vercel": "node scripts/vercel-build.mjs",
+    "lint": "node scripts/workspace-task.mjs lint",
+    "typecheck": "node scripts/workspace-task.mjs typecheck",
+    "test": "node scripts/workspace-task.mjs test",
+    "test:e2e": "node scripts/workspace-task.mjs test:e2e",
+    "db:generate": "node scripts/database-task.mjs generate",
+    "db:migrate": "node scripts/database-task.mjs migrate",
+    "db:seed": "node scripts/database-task.mjs seed",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.4",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "fake-indexeddb": "6.2.4",
+    "globals": "16.4.0",
+    "prettier": "3.6.2",
+    "tsx": "4.20.6",
+    "turbo": "2.5.8",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.1",
+    "vite": "8.0.13",
+    "vitest": "3.2.4"
+  },
+  "displayName": "方域 Nexus"
+}

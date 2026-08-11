@@ -1,0 +1,17 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/domain" },
+    { "path": "./packages/contracts" },
+    { "path": "./packages/game-rules" },
+    { "path": "./packages/parsers-wasm" },
+    { "path": "./packages/observability" },
+    { "path": "./packages/ui" },
+    { "path": "./apps/api" },
+    { "path": "./apps/web" },
+    { "path": "./apps/worker-ingest" },
+    { "path": "./apps/worker-files" },
+    { "path": "./apps/worker-ping" },
+    { "path": "./apps/worker-render" }
+  ]
+}
