@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import type { GameMode, Inventory } from "@fangyu/voxel-engine";
+import {
+  normalizeNexusQuestState,
+  type GameMode,
+  type Inventory,
+  type NexusQuestState,
+} from "@fangyu/voxel-engine";
 import { getOwnerId } from "@/lib/server/game-auth";
 import { getPlayerState, savePlayerState } from "@/lib/server/world-store";
 
@@ -63,6 +68,7 @@ export async function POST(request: Request, context: Context) {
         Array.isArray(body.spawnPoint) && body.spawnPoint.length === 3
           ? (body.spawnPoint as [number, number, number])
           : [0.5, 38, 0.5],
+      quest: normalizeNexusQuestState(body.quest as Partial<NexusQuestState>),
       revision: Number(body.revision) || 0,
     },
     typeof body.expectedRevision === "number"
