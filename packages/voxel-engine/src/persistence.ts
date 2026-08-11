@@ -1,6 +1,7 @@
 import type { BlockIdValue } from "./blocks";
 import type { ChunkModification } from "./world";
 import type { Inventory } from "./gameplay";
+import type { NexusQuestState } from "./quests";
 
 export type GameMode = "creative" | "survival";
 
@@ -50,6 +51,8 @@ export interface PlayerWorldState {
   selectedSlot: number;
   gameMode: GameMode;
   spawnPoint: readonly [number, number, number];
+  /** Optional for safe migration of worlds created before the quest update. */
+  quest?: NexusQuestState;
   lastPlayedAt: string;
   revision: number;
 }
