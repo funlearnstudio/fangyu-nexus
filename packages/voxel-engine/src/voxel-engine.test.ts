@@ -14,6 +14,10 @@ import {
   raycastVoxels,
   setChunkBlock,
   terrainHeight,
+  countInventoryItem,
+  createNexusQuestState,
+  getNexusNodes,
+  repairNexusNode,
   voxelIndex,
   worldToChunk,
   worldToLocal,
@@ -93,5 +97,31 @@ describe("inventory and crafting", () => {
       ),
     ).toBe(true);
     expect(craftInventory(Array(9).fill(null), GAME_RECIPES[0]!)).toBeNull();
+  });
+});
+
+describe("Nexus world quest", () => {
+  it("keeps portal node locations deterministic for a seed", () => {
+    expect(getNexusNodes("quest-seed")).toEqual(getNexusNodes("quest-seed"));
+    expect(getNexusNodes("quest-seed")).toHaveLength(3);
+  });
+
+  it("consumes three glow crystals only when repairing a new node", () => {
+    const inventory = addToInventory(
+      Array(9).fill(null),
+      BlockId.GlowCrystal,
+      3,
+    );
+    const result = repairNexusNode(
+      createNexusQuestState(),
+      inventory,
+      "amber",
+      "now",
+    );
+    expect(result?.state.repairedNodeIds).toEqual(["amber"]);
+    expect(countInventoryItem(result!.inventory, BlockId.GlowCrystal)).toBe(0);
+    expect(
+      repairNexusNode(result!.state, result!.inventory, "amber"),
+    ).toBeNull();
   });
 });
