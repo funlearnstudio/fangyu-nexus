@@ -1951,6 +1951,38 @@ dd {
   color: var(--diamond-300);
   font-size: 0.68rem;
 }
+.quest-tracker {
+  position: absolute;
+  top: 4.7rem;
+  right: 1rem;
+  display: grid;
+  gap: 0.28rem;
+  width: min(265px, calc(100vw - 2rem));
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgb(84 200 216 / 55%);
+  border-left: 3px solid var(--diamond-400);
+  background: rgb(10 23 28 / 82%);
+  font: 0.68rem var(--font-mono);
+  pointer-events: none;
+}
+.quest-tracker strong {
+  color: var(--diamond-300);
+  letter-spacing: 0.08em;
+}
+.quest-tracker b {
+  color: #f0d685;
+}
+.quest-tracker small {
+  color: #b8c9c8;
+  line-height: 1.35;
+}
+.quest-tracker.complete {
+  border-color: #6ddb9a;
+  border-left-color: #6ddb9a;
+}
+.quest-tracker.complete strong {
+  color: #8af0b2;
+}
 .save-state.saved {
   color: #63d98c;
 }
@@ -2191,5 +2223,10 @@ dd {
   }
   .vitals {
     grid-template-columns: repeat(2, 120px);
+  }
+  .quest-tracker {
+    top: 4.2rem;
+    right: 0.5rem;
+    width: min(225px, calc(100vw - 1rem));
   }
 }
