@@ -4,6 +4,7 @@ import {
   BlockId,
   GENERATION_VERSION,
   addToInventory,
+  createNexusQuestState,
   terrainHeight,
   type GameMode,
   type GameWorldMetadata,
@@ -177,6 +178,7 @@ export function initialPlayerState(world: GameWorldMetadata): PlayerWorldState {
     selectedSlot: 0,
     gameMode: world.gameMode,
     spawnPoint: world.spawn,
+    quest: createNexusQuestState(),
     lastPlayedAt: new Date().toISOString(),
     revision: 0,
   };
