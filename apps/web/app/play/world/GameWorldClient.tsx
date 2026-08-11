@@ -537,6 +537,10 @@ function WorldRuntime({
     saveTimer = useRef(0),
     audio = useRef<AudioContext | null>(null);
   const sun = useRef<THREE.DirectionalLight>(null);
+  const safeSpawn = useMemo<readonly [number, number, number]>(
+    () => [0.5, terrainHeight(world.seed, 0, 0) + 1.001, 0.5],
+    [world.seed],
+  );
 
   const lookup = useCallback(
     (x: number, y: number, z: number): BlockIdValue => {
@@ -748,7 +752,7 @@ function WorldRuntime({
         inventory: inventory.current,
         selectedSlot: selected.current,
         gameMode: world.gameMode,
-        spawnPoint: initialPlayer.spawnPoint,
+        spawnPoint: safeSpawn,
         lastPlayedAt: now,
         revision: initialPlayer.revision,
       };
@@ -804,7 +808,7 @@ function WorldRuntime({
     } catch {
       onSaveStatus("failed");
     }
-  }, [initialPlayer.revision, initialPlayer.spawnPoint, onSaveStatus, world]);
+  }, [initialPlayer.revision, onSaveStatus, safeSpawn, world]);
 
   useEffect(() => {
     registerSave(save);
@@ -852,7 +856,7 @@ function WorldRuntime({
       }
     };
     const onRespawn = () => {
-      position.current.set(...initialPlayer.spawnPoint);
+      position.current.set(...safeSpawn);
       velocity.current.set(0, 0, 0);
       health.current = 20;
       hunger.current = 20;
@@ -878,7 +882,7 @@ function WorldRuntime({
     beep,
     changeBlock,
     gl.domElement,
-    initialPlayer.spawnPoint,
+    safeSpawn,
     setInventoryOpen,
     setPaused,
     settings.sensitivity,
@@ -1042,14 +1046,16 @@ function WorldRuntime({
     }
   });
 
-  const spawnY = terrainHeight(world.seed, 0, 0) + 3;
+  const spawnY = safeSpawn[1];
   useEffect(() => {
     if (
       initialPlayer.position[1] >= WORLD_HEIGHT ||
-      initialPlayer.position[1] <= 0
+      initialPlayer.position[1] <= 0 ||
+      // Repair worlds created by the early fixed-height spawn implementation.
+      initialPlayer.position[1] > spawnY + 6
     )
-      position.current.y = spawnY;
-  }, [initialPlayer.position, spawnY]);
+      position.current.set(...safeSpawn);
+  }, [initialPlayer.position, safeSpawn, spawnY]);
 
   return (
     <>
