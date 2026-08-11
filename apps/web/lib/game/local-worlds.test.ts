@@ -4,6 +4,7 @@ import {
   BlockId,
   GENERATION_VERSION,
   compactModification,
+  terrainHeight,
   voxelIndex,
 } from "@fangyu/voxel-engine";
 import {
@@ -30,6 +31,11 @@ describe("IndexedDB local-first world persistence", () => {
       renderDistance: 2,
     });
     const player = initialPlayerState(world);
+    expect(world.spawn).toEqual([
+      0.5,
+      terrainHeight("stable-seed-77", 0, 0) + 1.001,
+      0.5,
+    ]);
     player.position = [12.5, 31, -4.5];
     player.inventory[0] = { blockId: BlockId.Timber, count: 23 };
 
