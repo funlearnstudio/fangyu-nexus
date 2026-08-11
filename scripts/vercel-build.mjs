@@ -12,4 +12,7 @@ runPnpm([
   "--filter=@fangyu/ui",
   "--filter=@fangyu/voxel-engine",
 ]);
+// Keep type safety enforced in production while avoiding Next 16's incomplete
+// project-reference checker. This invokes the repository's TypeScript build.
+runPnpm(["typecheck"]);
 runPnpm(["--filter", "@fangyu/web", "exec", "next", "build"]);
