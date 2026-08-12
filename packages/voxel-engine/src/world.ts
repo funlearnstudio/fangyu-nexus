@@ -105,13 +105,27 @@ export interface ChunkData {
   revision: number;
 }
 
-export interface ChunkMeshData {
+export interface ChunkMeshLayerData {
   positions: Float32Array;
   normals: Float32Array;
   colors: Float32Array;
   indices: Uint32Array;
   triangles: number;
 }
+
+export interface ChunkMeshData extends ChunkMeshLayerData {
+  /** Water is rendered in a separate transparent pass, never as opaque terrain. */
+  water: ChunkMeshLayerData;
+}
+
+/** Renderer-agnostic contract for the water pass. */
+export const WATER_RENDER_STATE = {
+  transparent: true,
+  opacity: 0.56,
+  depthWrite: false,
+  depthTest: true,
+  side: "front" as const,
+} as const;
 
 export function floorDiv(value: number, divisor: number): number {
   return Math.floor(value / divisor);
@@ -632,10 +646,18 @@ export function buildChunkMesh(
   chunk: ChunkData,
   lookup?: WorldBlockLookup,
 ): ChunkMeshData {
-  const positions: number[] = [],
-    normals: number[] = [],
-    colors: number[] = [],
-    indices: number[] = [];
+  const opaque = {
+    positions: [] as number[],
+    normals: [] as number[],
+    colors: [] as number[],
+    indices: [] as number[],
+  };
+  const water = {
+    positions: [] as number[],
+    normals: [] as number[],
+    colors: [] as number[],
+    indices: [] as number[],
+  };
   const originX = chunk.x * CHUNK_SIZE,
     originZ = chunk.z * CHUNK_SIZE;
   for (let y = 0; y < WORLD_HEIGHT; y += 1)
@@ -644,6 +666,7 @@ export function buildChunkMesh(
         const id = getChunkBlock(chunk, x, y, z);
         if (id === BlockId.Air) continue;
         const definition = getBlockDefinition(id);
+        const target = id === BlockId.Water ? water : opaque;
         for (const face of faces) {
           const nx = face.normal[0],
             ny = face.normal[1],
@@ -652,35 +675,53 @@ export function buildChunkMesh(
             ? lookup(originX + x + nx, y + ny, originZ + z + nz)
             : getChunkBlock(chunk, x + nx, y + ny, z + nz);
           const adjacentDefinition = getBlockDefinition(adjacent);
+          // Liquid cells share no internal faces. This is important both within a
+          // chunk and when `lookup` resolves the neighbouring chunk boundary.
           if (
-            (adjacent === id && definition.transparent) ||
-            (adjacent !== BlockId.Air && !adjacentDefinition.transparent)
+            (id === BlockId.Water && adjacent === BlockId.Water) ||
+            (id !== BlockId.Water &&
+              ((adjacent === id && definition.transparent) ||
+                (adjacent !== BlockId.Air && !adjacentDefinition.transparent)))
           )
             continue;
-          const base = positions.length / 3;
+          const base = target.positions.length / 3;
           const variation =
             0.92 + (hash32(voxelIndex(x, y, z) ^ (id * 101)) % 13) / 100;
           for (const corner of face.corners) {
-            positions.push(
+            target.positions.push(
               originX + x + corner[0],
               y + corner[1],
               originZ + z + corner[2],
             );
-            normals.push(nx, ny, nz);
-            colors.push(
+            target.normals.push(nx, ny, nz);
+            target.colors.push(
               Math.min(1, definition.color[0] * face.shade * variation),
               Math.min(1, definition.color[1] * face.shade * variation),
               Math.min(1, definition.color[2] * face.shade * variation),
             );
           }
-          indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+          target.indices.push(
+            base,
+            base + 1,
+            base + 2,
+            base,
+            base + 2,
+            base + 3,
+          );
         }
       }
+  const layer = (source: typeof opaque): ChunkMeshLayerData => ({
+    positions: new Float32Array(source.positions),
+    normals: new Float32Array(source.normals),
+    colors: new Float32Array(source.colors),
+    indices: new Uint32Array(source.indices),
+    triangles: source.indices.length / 3,
+  });
+  const opaqueLayer = layer(opaque);
+  const waterLayer = layer(water);
   return {
-    positions: new Float32Array(positions),
-    normals: new Float32Array(normals),
-    colors: new Float32Array(colors),
-    indices: new Uint32Array(indices),
-    triangles: indices.length / 3,
+    ...opaqueLayer,
+    water: waterLayer,
+    triangles: opaqueLayer.triangles + waterLayer.triangles,
   };
 }

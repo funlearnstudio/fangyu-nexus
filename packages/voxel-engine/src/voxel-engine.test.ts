@@ -5,6 +5,7 @@ import {
   addToInventory,
   addToInventoryWithRemainder,
   buildChunkMesh,
+  WATER_RENDER_STATE,
   canPlaceBlock,
   canCultivateSurface,
   canPlantCropOn,
@@ -187,12 +188,44 @@ describe("voxel world", () => {
     const chunk = generateChunk("water-mesh", 0, 0);
     chunk.blocks.fill(BlockId.Air);
     setChunkBlock(chunk, 4, 10, 4, BlockId.Water);
-    expect(buildChunkMesh(chunk).triangles).toBe(12);
+    const mesh = buildChunkMesh(chunk);
+    expect(mesh.triangles).toBe(12);
+    expect(mesh.water.triangles).toBe(12);
+    expect(mesh.indices).toHaveLength(0);
     expect(
       collidesWithWorld(playerAabb([4.5, 10, 4.5]), (x, y, z) =>
         x === 4 && y === 10 && z === 4 ? BlockId.Water : BlockId.Air,
       ),
     ).toBe(false);
+  });
+
+  it("never creates internal water faces, including across a chunk boundary", () => {
+    const chunk = generateChunk("water-boundary-mesh", 0, 0);
+    chunk.blocks.fill(BlockId.Air);
+    setChunkBlock(chunk, 14, 10, 4, BlockId.Water);
+    setChunkBlock(chunk, 15, 10, 4, BlockId.Water);
+    const local = buildChunkMesh(chunk);
+    // Two touching water cubes expose ten faces, not twelve.
+    expect(local.water.triangles).toBe(20);
+
+    chunk.blocks.fill(BlockId.Air);
+    setChunkBlock(chunk, 15, 10, 4, BlockId.Water);
+    const withoutNeighbour = buildChunkMesh(chunk);
+    const withWaterNeighbour = buildChunkMesh(chunk, (x, y, z) =>
+      x === 16 && y === 10 && z === 4 ? BlockId.Water : BlockId.Air,
+    );
+    expect(withoutNeighbour.water.triangles).toBe(12);
+    expect(withWaterNeighbour.water.triangles).toBe(10);
+    expect(withWaterNeighbour.water.positions).toHaveLength(20 * 3);
+  });
+
+  it("keeps water in a transparent, non-depth-writing render pass", () => {
+    expect(WATER_RENDER_STATE).toMatchObject({
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      side: "front",
+    });
   });
 });
 

@@ -18,6 +18,7 @@ import {
   GAME_RECIPES,
   SEA_LEVEL,
   WORLD_HEIGHT,
+  WATER_RENDER_STATE,
   canPlaceBlock,
   canCultivateSurface,
   canPlantCropOn,
@@ -54,6 +55,7 @@ import {
   objectiveProgress,
   applyGameplayEvent,
   acceptSideQuest,
+  buildChunkMesh,
   MAIN_QUESTS,
   SIDE_QUESTS,
   repairNexusNode,
@@ -64,6 +66,7 @@ import {
   worldToLocal,
   type BlockIdValue,
   type ChunkData,
+  type ChunkMeshLayerData,
   type ChunkMeshData,
   type CropEntity,
   type CreatureEntity,
@@ -104,6 +107,7 @@ type SaveStatus = "saved" | "saving" | "offline" | "failed";
 type LoadedChunk = {
   data: ChunkData;
   mesh: ChunkMeshData;
+  meshRevision: number;
   modifications: Map<number, BlockIdValue>;
   entities: WorldEntity[];
   dirty: boolean;
@@ -1104,29 +1108,61 @@ function PauseLayer({
 }
 
 function ChunkMesh({ chunk }: { chunk: RenderChunk }) {
-  const geometry = useMemo(() => {
+  const createGeometry = useCallback((layer: ChunkMeshLayerData) => {
     const value = new THREE.BufferGeometry();
     value.setAttribute(
       "position",
-      new THREE.BufferAttribute(chunk.mesh.positions, 3),
+      new THREE.BufferAttribute(layer.positions, 3),
     );
-    value.setAttribute(
-      "normal",
-      new THREE.BufferAttribute(chunk.mesh.normals, 3),
-    );
-    value.setAttribute(
-      "color",
-      new THREE.BufferAttribute(chunk.mesh.colors, 3),
-    );
-    value.setIndex(new THREE.BufferAttribute(chunk.mesh.indices, 1));
+    value.setAttribute("normal", new THREE.BufferAttribute(layer.normals, 3));
+    value.setAttribute("color", new THREE.BufferAttribute(layer.colors, 3));
+    value.setIndex(new THREE.BufferAttribute(layer.indices, 1));
     value.computeBoundingSphere();
     return value;
-  }, [chunk]);
-  useEffect(() => () => geometry.dispose(), [geometry]);
+  }, []);
+  const geometry = useMemo(
+    () => createGeometry(chunk.mesh),
+    [chunk.mesh, createGeometry],
+  );
+  const waterGeometry = useMemo(
+    () => createGeometry(chunk.mesh.water),
+    [chunk.mesh, createGeometry],
+  );
+  useEffect(
+    () => () => {
+      geometry.dispose();
+      waterGeometry.dispose();
+    },
+    [geometry, waterGeometry],
+  );
   return (
-    <mesh geometry={geometry} frustumCulled castShadow={false} receiveShadow>
-      <meshLambertMaterial vertexColors />
-    </mesh>
+    <group>
+      <mesh geometry={geometry} frustumCulled castShadow={false} receiveShadow>
+        <meshLambertMaterial vertexColors />
+      </mesh>
+      {chunk.mesh.water.triangles > 0 && (
+        <mesh
+          geometry={waterGeometry}
+          frustumCulled
+          castShadow={false}
+          receiveShadow={false}
+          renderOrder={1}
+        >
+          <meshLambertMaterial
+            vertexColors
+            transparent={WATER_RENDER_STATE.transparent}
+            opacity={WATER_RENDER_STATE.opacity}
+            depthWrite={WATER_RENDER_STATE.depthWrite}
+            depthTest={WATER_RENDER_STATE.depthTest}
+            side={
+              WATER_RENDER_STATE.side === "front"
+                ? THREE.FrontSide
+                : THREE.DoubleSide
+            }
+          />
+        </mesh>
+      )}
+    </group>
   );
 }
 
@@ -1430,11 +1466,24 @@ function WorldRuntime({
     [],
   );
 
+  // Chunks arrive independently. Rebuilding this small five-chunk cross after
+  // each arrival removes provisional boundary faces (especially water-water
+  // faces) as soon as the adjacent chunk is available.
+  const remeshLoadedChunk = useCallback(
+    (x: number, z: number) => {
+      const chunk = chunks.current.get(chunkKey(x, z));
+      if (!chunk) return;
+      chunk.mesh = buildChunkMesh(chunk.data, lookup);
+      chunk.meshRevision += 1;
+    },
+    [lookup],
+  );
+
   const publishChunks = useCallback(() => {
     setRenderChunks(
       Array.from(chunks.current, ([key, chunk]) => ({
         key,
-        revision: chunk.data.revision,
+        revision: chunk.meshRevision,
         mesh: chunk.mesh,
       })),
     );
@@ -1554,6 +1603,11 @@ function WorldRuntime({
         normals: ArrayBuffer;
         colors: ArrayBuffer;
         indices: ArrayBuffer;
+        waterPositions: ArrayBuffer;
+        waterNormals: ArrayBuffer;
+        waterColors: ArrayBuffer;
+        waterIndices: ArrayBuffer;
+        waterTriangles: number;
         triangles: number;
       }>,
     ) => {
@@ -1590,8 +1644,16 @@ function WorldRuntime({
           normals: new Float32Array(message.normals),
           colors: new Float32Array(message.colors),
           indices: new Uint32Array(message.indices),
+          water: {
+            positions: new Float32Array(message.waterPositions),
+            normals: new Float32Array(message.waterNormals),
+            colors: new Float32Array(message.waterColors),
+            indices: new Uint32Array(message.waterIndices),
+            triangles: message.waterTriangles,
+          },
           triangles: message.triangles,
         },
+        meshRevision: (previous?.meshRevision ?? 0) + 1,
         modifications:
           previous?.modifications ??
           requestedModifications.current.get(key) ??
@@ -1617,11 +1679,16 @@ function WorldRuntime({
         serverRevision:
           previous?.serverRevision ?? requestedRevisions.current.get(key) ?? 0,
       });
+      remeshLoadedChunk(message.chunkX, message.chunkZ);
+      remeshLoadedChunk(message.chunkX - 1, message.chunkZ);
+      remeshLoadedChunk(message.chunkX + 1, message.chunkZ);
+      remeshLoadedChunk(message.chunkX, message.chunkZ - 1);
+      remeshLoadedChunk(message.chunkX, message.chunkZ + 1);
       pending.current.delete(key);
       publishChunks();
     };
     return () => generator.terminate();
-  }, [landmarks, publishChunks, world.seed]);
+  }, [landmarks, publishChunks, remeshLoadedChunk, world.seed]);
 
   const beep = useCallback(
     (frequency: number) => {
@@ -2776,10 +2843,11 @@ function WorldRuntime({
           beep(260);
         }
         velocity.current.y -= (inWater ? 3.2 : 22) * dt;
+        const eyeHeight = keys.current.has("ControlLeft") ? 1.35 : 1.62;
         const headUnderwater =
           lookup(
             Math.floor(position.current.x),
-            Math.floor(position.current.y + 1.62),
+            Math.floor(position.current.y + eyeHeight),
             Math.floor(position.current.z),
           ) === BlockId.Water;
         oxygen.current = headUnderwater
@@ -2967,11 +3035,22 @@ function WorldRuntime({
       sun.current.intensity = daylight * 1.5;
     }
     const sky = new THREE.Color().setHSL(0.57, 0.42, 0.08 + daylight * 0.5);
-    state.scene.background = sky;
+    const cameraUnderwater =
+      lookup(
+        Math.floor(camera.position.x),
+        Math.floor(camera.position.y),
+        Math.floor(camera.position.z),
+      ) === BlockId.Water;
+    const underwaterSky = new THREE.Color("#123a57");
+    // This is a camera/scene effect, never a quad placed in front of the
+    // camera. It is only active when the actual camera voxel contains water.
+    state.scene.background = cameraUnderwater ? underwaterSky : sky;
     state.scene.fog = new THREE.Fog(
-      sky,
-      settings.renderDistance * CHUNK_SIZE * 0.75,
-      settings.renderDistance * CHUNK_SIZE * 1.65,
+      cameraUnderwater ? underwaterSky : sky,
+      cameraUnderwater ? 1.5 : settings.renderDistance * CHUNK_SIZE * 0.75,
+      cameraUnderwater
+        ? Math.min(34, settings.renderDistance * CHUNK_SIZE * 0.9)
+        : settings.renderDistance * CHUNK_SIZE * 1.65,
     );
     lastHud.current += delta;
     saveTimer.current += delta;

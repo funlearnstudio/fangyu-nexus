@@ -37,6 +37,11 @@ self.onmessage = (event: MessageEvent<GenerateRequest>) => {
       normals: mesh.normals.buffer,
       colors: mesh.colors.buffer,
       indices: mesh.indices.buffer,
+      waterPositions: mesh.water.positions.buffer,
+      waterNormals: mesh.water.normals.buffer,
+      waterColors: mesh.water.colors.buffer,
+      waterIndices: mesh.water.indices.buffer,
+      waterTriangles: mesh.water.triangles,
       triangles: mesh.triangles,
     },
     {
@@ -46,6 +51,10 @@ self.onmessage = (event: MessageEvent<GenerateRequest>) => {
         mesh.normals.buffer,
         mesh.colors.buffer,
         mesh.indices.buffer,
+        mesh.water.positions.buffer,
+        mesh.water.normals.buffer,
+        mesh.water.colors.buffer,
+        mesh.water.indices.buffer,
       ],
     },
   );
