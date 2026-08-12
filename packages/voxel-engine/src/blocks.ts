@@ -9,6 +9,10 @@ export const BlockId = {
   Water: 7,
   CopperBloom: 8,
   GlowCrystal: 9,
+  SunShardOre: 10,
+  DuskShardOre: 11,
+  SunShard: 12,
+  DuskShard: 13,
 } as const;
 
 export type BlockIdValue = (typeof BlockId)[keyof typeof BlockId];
@@ -22,6 +26,7 @@ export interface BlockDefinition {
   transparent: boolean;
   hardness: number;
   drop: BlockIdValue | null;
+  lootTableId?: string;
   metadataSchema: "none" | "fluid-level" | "orientation";
 }
 
@@ -136,7 +141,64 @@ export const BLOCKS: readonly BlockDefinition[] = [
     drop: BlockId.GlowCrystal,
     metadataSchema: "none",
   },
+  {
+    id: BlockId.SunShardOre,
+    key: "sun-shard-ore",
+    name: "日耀晶礦",
+    color: [0.95, 0.72, 0.2],
+    solid: true,
+    transparent: false,
+    hardness: 3.1,
+    drop: BlockId.SunShard,
+    lootTableId: "ore:sun-shard",
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.DuskShardOre,
+    key: "dusk-shard-ore",
+    name: "暮影晶礦",
+    color: [0.57, 0.27, 0.78],
+    solid: true,
+    transparent: false,
+    hardness: 3.4,
+    drop: BlockId.DuskShard,
+    lootTableId: "ore:dusk-shard",
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.SunShard,
+    key: "sun-shard",
+    name: "日耀晶",
+    color: [1, 0.82, 0.28],
+    solid: true,
+    transparent: false,
+    hardness: 1,
+    drop: BlockId.SunShard,
+    lootTableId: "item:sun-shard",
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.DuskShard,
+    key: "dusk-shard",
+    name: "暮影晶",
+    color: [0.65, 0.38, 0.9],
+    solid: true,
+    transparent: false,
+    hardness: 1,
+    drop: BlockId.DuskShard,
+    lootTableId: "item:dusk-shard",
+    metadataSchema: "none",
+  },
 ] as const;
+
+export interface LootDrop {
+  itemId: BlockIdValue;
+  count: number;
+}
+export function getBlockLoot(blockId: BlockIdValue): readonly LootDrop[] {
+  const block = getBlockDefinition(blockId);
+  return block.drop === null ? [] : [{ itemId: block.drop, count: 1 }];
+}
 
 const blocksById = new Map(BLOCKS.map((block) => [block.id, block]));
 
