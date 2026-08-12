@@ -212,6 +212,31 @@ export function GameWorldClient() {
     void canvas?.requestPointerLock();
   }, []);
 
+  const finishTutorial = useCallback(
+    async (skipped: boolean) => {
+      if (!player) return;
+      const next: PlayerWorldState = {
+        ...player,
+        quest: {
+          ...normalizeNexusQuestState(player.quest),
+          tutorialCompleted: !skipped,
+          tutorialSkipped: skipped,
+        },
+        revision: player.revision + 1,
+        lastPlayedAt: new Date().toISOString(),
+      };
+      setPlayer(next);
+      await putLocalPlayer(next);
+      window.dispatchEvent(
+        new CustomEvent("fangyu-tutorial", {
+          detail: skipped ? "skip" : "complete",
+        }),
+      );
+      setTutorialPage(null);
+    },
+    [player],
+  );
+
   if (!worldId)
     return (
       <div className="game-load-error">
@@ -348,14 +373,7 @@ export function GameWorldClient() {
         <TutorialOverlay
           page={tutorialPage}
           setPage={setTutorialPage}
-          finish={(skipped) => {
-            window.dispatchEvent(
-              new CustomEvent("fangyu-tutorial", {
-                detail: skipped ? "skip" : "complete",
-              }),
-            );
-            setTutorialPage(null);
-          }}
+          finish={(skipped) => void finishTutorial(skipped)}
         />
       )}
       {hud.dead && (
