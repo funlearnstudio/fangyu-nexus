@@ -37,6 +37,7 @@ import {
   pickupDroppedItem,
   cropGrowthStage,
   isCropMature,
+  isShelterComplete,
   raycastVoxels,
   removeFromInventory,
   normalizeNexusQuestState,
@@ -330,6 +331,7 @@ export function GameWorldClient() {
           hud={hud}
           resume={resume}
           setInventoryOpen={setInventoryOpen}
+          openQuest={() => setQuestOpen(true)}
           save={async () => saveRef.current()}
         />
       )}
@@ -497,7 +499,8 @@ function QuestJournal({
             <p>已修復節點：{quest.repairedNodeIds.length}</p>
             <p>已發現生態系：{quest.discoveredBiomes.length}</p>
             <p>已發現地標：{quest.discoveredStructures.length}</p>
-            <p>支線任務將在居民系統解鎖後顯示於此區。</p>
+            <h3>Side Quests</h3>
+            <p>目前沒有已接受的支線任務。</p>
           </main>
         </div>
       </section>
@@ -627,6 +630,7 @@ function PauseLayer({
   hud,
   resume,
   setInventoryOpen,
+  openQuest,
   save,
 }: {
   world: GameWorldMetadata;
@@ -634,6 +638,7 @@ function PauseLayer({
   hud: HudState;
   resume: () => void;
   setInventoryOpen: (open: boolean) => void;
+  openQuest: () => void;
   save: () => Promise<void>;
 }) {
   const [craftMessage, setCraftMessage] = useState("");
@@ -705,6 +710,9 @@ function PauseLayer({
             </button>
             <button type="button" onClick={() => setInventoryOpen(true)}>
               Inventory / Crafting
+            </button>
+            <button type="button" onClick={openQuest}>
+              Quest Journal
             </button>
             <Link href="/play/settings">Settings</Link>
             <button type="button" onClick={() => void save()}>
@@ -1228,6 +1236,17 @@ function WorldRuntime({
           type: "place",
           key: getBlockDefinition(stack.blockId).key,
         });
+        if (
+          isShelterComplete(
+            [position.current.x, position.current.y, position.current.z],
+            lookup,
+          )
+        )
+          emitQuestEvent({
+            id: `shelter:${world.id}`,
+            type: "build",
+            key: "shelter",
+          });
         if (world.gameMode === "survival")
           inventory.current =
             removeFromInventory(inventory.current, selected.current, 1) ??
@@ -1454,6 +1473,12 @@ function WorldRuntime({
       if (result) {
         inventory.current = result;
         emitQuestEvent({ type: "craft", key: recipe.id });
+        if (recipe.output.blockId === BlockId.TrailRation)
+          emitQuestEvent({
+            type: "collect",
+            key: "food",
+            amount: recipe.output.count,
+          });
         beep(440);
       }
     };
@@ -1729,6 +1754,25 @@ function WorldRuntime({
                 amount: picked.pickedUp,
                 id: `pickup-crystal:${entity.id}:${entity.count - (picked.remaining?.count ?? 0)}`,
               });
+            if (entity.itemId === BlockId.SunEgg)
+              emitQuestEvent({
+                type: "animalProduct",
+                key: "egg",
+                amount: picked.pickedUp,
+                id: `pickup-egg:${entity.id}:${entity.count - (picked.remaining?.count ?? 0)}`,
+              });
+            if (
+              entity.itemId === BlockId.SunEgg ||
+              entity.itemId === BlockId.Sungrain ||
+              entity.itemId === BlockId.TrailRation ||
+              entity.itemId === BlockId.MeadowMilk
+            )
+              emitQuestEvent({
+                type: "collect",
+                key: "food",
+                amount: picked.pickedUp,
+                id: `pickup-food:${entity.id}:${entity.count - (picked.remaining?.count ?? 0)}`,
+              });
             changed = true;
             chunk.dirty = true;
             beep(355);
@@ -1850,6 +1894,7 @@ function WorldRuntime({
         if (filled.remaining > 0) return false;
         inventory.current = filled.inventory;
         emitQuestEvent({ type: "animalProduct", key: "milk" });
+        emitQuestEvent({ type: "collect", key: "food" });
         questMessage.current = "取得牧野乳。";
         beep(520);
         return true;
