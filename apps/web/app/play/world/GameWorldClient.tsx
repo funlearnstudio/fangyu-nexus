@@ -40,6 +40,7 @@ import {
   isShelterComplete,
   raycastVoxels,
   removeFromInventory,
+  moveInventoryStack,
   normalizeNexusQuestState,
   objectiveProgress,
   applyGameplayEvent,
@@ -660,6 +661,7 @@ function PauseLayer({
   save: () => Promise<void>;
 }) {
   const [craftMessage, setCraftMessage] = useState("");
+  const [dragSource, setDragSource] = useState<number | null>(null);
   return (
     <div className="game-modal-backdrop">
       <section className="pause-menu">
@@ -673,7 +675,26 @@ function PauseLayer({
               {hud.inventory.map((stack, index) => {
                 const block = getBlockDefinition(stack?.blockId ?? 0);
                 return (
-                  <div key={index}>
+                  <div
+                    key={index}
+                    draggable={Boolean(stack)}
+                    aria-label={
+                      stack ? `${block.name} × ${stack.count}` : "空格"
+                    }
+                    onDragStart={() => setDragSource(index)}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      if (dragSource === null) return;
+                      window.dispatchEvent(
+                        new CustomEvent("fangyu-inventory-move", {
+                          detail: { from: dragSource, to: index },
+                        }),
+                      );
+                      setDragSource(null);
+                    }}
+                    onDragEnd={() => setDragSource(null)}
+                  >
                     {stack ? (
                       <>
                         <span
@@ -1500,6 +1521,16 @@ function WorldRuntime({
         beep(440);
       }
     };
+    const onInventoryMove = (event: Event) => {
+      const detail = (event as CustomEvent<{ from: number; to: number }>)
+        .detail;
+      inventory.current = moveInventoryStack(
+        inventory.current,
+        detail.from,
+        detail.to,
+      );
+      beep(300);
+    };
     const onTutorial = (event: Event) => {
       const action = (event as CustomEvent<"skip" | "complete">).detail;
       quest.current = {
@@ -1522,6 +1553,7 @@ function WorldRuntime({
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mousedown", onMouseDown);
     window.addEventListener("fangyu-craft", onCraft);
+    window.addEventListener("fangyu-inventory-move", onInventoryMove);
     window.addEventListener("fangyu-tutorial", onTutorial);
     window.addEventListener("fangyu-respawn", onRespawn);
     return () => {
@@ -1531,6 +1563,7 @@ function WorldRuntime({
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("fangyu-craft", onCraft);
+      window.removeEventListener("fangyu-inventory-move", onInventoryMove);
       window.removeEventListener("fangyu-tutorial", onTutorial);
       window.removeEventListener("fangyu-respawn", onRespawn);
     };
