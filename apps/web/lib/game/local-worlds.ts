@@ -15,6 +15,22 @@ import {
 const DATABASE_NAME = "fangyu-nexus-game";
 const DATABASE_VERSION = 1;
 
+export function createRuntimeId(): string {
+  const runtimeCrypto = globalThis.crypto;
+  if (typeof runtimeCrypto?.randomUUID === "function")
+    return runtimeCrypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (typeof runtimeCrypto?.getRandomValues === "function")
+    runtimeCrypto.getRandomValues(bytes);
+  else
+    for (let index = 0; index < bytes.length; index += 1)
+      bytes[index] = Math.floor(Math.random() * 256);
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+}
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
@@ -57,7 +73,7 @@ export function createWorldMetadata(input: {
   renderDistance: number;
 }): GameWorldMetadata {
   const now = new Date().toISOString();
-  const seed = input.seed.trim() || crypto.randomUUID();
+  const seed = input.seed.trim() || createRuntimeId();
   // Player coordinates describe the feet position. Start just above the
   // deterministic terrain instead of at a fixed sky height.
   const spawn: [number, number, number] = [
@@ -66,7 +82,7 @@ export function createWorldMetadata(input: {
     0.5,
   ];
   return {
-    id: crypto.randomUUID(),
+    id: createRuntimeId(),
     name: input.name,
     seed,
     gameMode: input.gameMode,
@@ -204,5 +220,39 @@ export async function syncWorldToCloud(
     return response.ok;
   } catch {
     return false;
+  }
+}
+
+/** Pulls the owner's cloud index into IndexedDB without overwriting a newer local save. */
+export async function hydrateCloudWorlds(): Promise<GameWorldMetadata[]> {
+  try {
+    const response = await fetch("/api/worlds", { cache: "no-store" });
+    if (!response.ok) return listLocalWorlds();
+    const payload = (await response.json()) as {
+      worlds?: GameWorldMetadata[];
+    };
+    const local = await listLocalWorlds();
+    const byId = new Map(local.map((world) => [world.id, world]));
+    for (const cloudWorld of payload.worlds ?? []) {
+      const current = byId.get(cloudWorld.id);
+      if (!current || cloudWorld.lastPlayedAt > current.lastPlayedAt) {
+        await putLocalWorld(cloudWorld);
+        byId.set(cloudWorld.id, cloudWorld);
+        const stateResponse = await fetch(`/api/worlds/${cloudWorld.id}/save`, {
+          cache: "no-store",
+        });
+        if (stateResponse.ok) {
+          const state = (await stateResponse.json()) as {
+            state?: PlayerWorldState;
+          };
+          if (state.state) await putLocalPlayer(state.state);
+        }
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) =>
+      b.lastPlayedAt.localeCompare(a.lastPlayedAt),
+    );
+  } catch {
+    return listLocalWorlds();
   }
 }

@@ -52,6 +52,36 @@ jobs:
       - run: pnpm db:migrate
       - run: pnpm db:seed
 
+  gameplay-webgl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm playwright:install
+      - run: pnpm test:gameplay
+
+  mongodb-world-persistence:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:8
+        ports:
+          - 27017:27017
+    env:
+      MONGODB_TEST_URI: mongodb://127.0.0.1:27017
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vitest run apps/web/lib/server/world-store.integration.test.ts
+
   cross-platform-smoke:
     strategy:
       fail-fast: false

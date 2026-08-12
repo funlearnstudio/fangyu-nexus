@@ -2087,6 +2087,19 @@ dd {
   font-family: var(--font-mono);
   font-weight: 800;
 }
+.hotbar .tool-durability {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  left: 4px;
+  height: 3px;
+  background: rgb(0 0 0 / 65%);
+}
+.hotbar .tool-durability span {
+  display: block;
+  height: 100%;
+  background: var(--emerald-400);
+}
 .block-swatch {
   display: block;
   width: 26px;
@@ -2223,6 +2236,75 @@ dd {
 .tutorial-actions button {
   min-height: 44px;
   padding: 0 1rem;
+}
+.station-modal {
+  width: min(900px, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+}
+.renderer-fallback {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.75rem;
+  padding: 2rem;
+  text-align: center;
+  background: radial-gradient(circle, #173038 0%, #071115 70%);
+  color: var(--stone-50);
+}
+.renderer-fallback p {
+  max-width: 42rem;
+  margin: 0;
+  color: var(--stone-200);
+}
+.station-slot-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(80px, 1fr));
+  gap: 0.35rem;
+}
+.station-slot-grid button {
+  min-height: 48px;
+  padding: 0.35rem;
+  font: 0.62rem var(--font-mono);
+}
+.processor-materials {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+.processor-materials > div {
+  border: 1px solid #527078;
+  background: #101a1e;
+  padding: 0.65rem;
+}
+.processor-materials h3,
+.processor-materials p {
+  margin: 0;
+}
+.processor-materials p {
+  margin-top: 0.35rem;
+  font: 0.72rem var(--font-mono);
+  color: var(--stone-200);
+}
+.processor-progress {
+  height: 10px;
+  margin: 1rem 0;
+  border: 1px solid #527078;
+  background: #101a1e;
+}
+.processor-progress i {
+  display: block;
+  height: 100%;
+  background: var(--redstone-400);
+}
+@media (max-width: 700px) {
+  .station-slot-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }
 @media (max-width: 700px) {
   .quest-journal-layout {

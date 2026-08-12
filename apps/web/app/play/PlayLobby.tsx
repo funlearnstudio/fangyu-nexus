@@ -8,6 +8,7 @@ import {
   createWorldMetadata,
   deleteLocalWorld,
   listLocalWorlds,
+  hydrateCloudWorlds,
   putLocalWorld,
   syncWorldToCloud,
 } from "@/lib/game/local-worlds";
@@ -22,6 +23,7 @@ export function PlayLobby() {
 
   useEffect(() => {
     void listLocalWorlds().then(setWorlds);
+    void hydrateCloudWorlds().then(setWorlds);
   }, []);
 
   async function create(event: FormEvent) {
@@ -44,7 +46,7 @@ export function PlayLobby() {
     <div className="play-lobby content-stack">
       <section className="play-intro">
         <div>
-          <p className="eyebrow">ORIGINAL VOXEL SANDBOX · PHASE 2</p>
+          <p className="eyebrow">ORIGINAL VOXEL SURVIVAL · NEXUS JOURNEY</p>
           <h1>進入一個會被記住的方域。</h1>
           <p>
             程序生成地形、真正的 chunk mesh、第一人稱物理與離線 IndexedDB
@@ -159,11 +161,11 @@ export function PlayLobby() {
         </div>
       </section>
       <section className="implementation-note">
-        <strong>目前完成：</strong> voxel terrain、chunk 載入/卸載、FPS
-        控制器、挖掘/放置、背包、基礎合成、本機持久化與 MongoDB 同步端點。
+        <strong>世界內容：</strong> 50 關 Nexus
+        Journey、十種生態系、水域、洞穴、
+        生物、農耕、聚落居民、支線、加工、儲存與有限 Nexus 快速旅行。
         <br />
-        <strong>Experimental：</strong> 洞穴生成、透明水面、簡化生物
-        AI。多人協作與飛行仍 deferred。
+        世界採 local-first 存檔；網路暫時離線時仍可遊玩，恢復後再批次同步。
       </section>
     </div>
   );

@@ -6,10 +6,19 @@ import {
   addToInventoryWithRemainder,
   buildChunkMesh,
   canPlaceBlock,
+  canCultivateSurface,
+  canPlantCropOn,
   chunkKey,
   collidesWithWorld,
   isShelterComplete,
   moveInventoryStack,
+  transferInventoryStack,
+  damageTool,
+  miningSeconds,
+  startProcessor,
+  finishProcessor,
+  collectProcessorOutput,
+  isPersistableWorldEntity,
   craftInventory,
   GAME_RECIPES,
   BIOMES,
@@ -29,6 +38,8 @@ import {
   applyGameplayEvent,
   getCurrentQuest,
   MAIN_QUESTS,
+  SIDE_QUESTS,
+  acceptSideQuest,
   normalizeNexusQuestState,
   reconcilePersistentQuestProgress,
   getNexusNodes,
@@ -62,18 +73,45 @@ describe("voxel world", () => {
   it("places deterministic villages and exploration landmarks", () => {
     const landmarks = getWorldLandmarks("settlement-seed");
     expect(landmarks).toEqual(getWorldLandmarks("settlement-seed"));
-    expect(landmarks.map((entry) => entry.type)).toEqual([
-      "village",
-      "abandoned-home",
-      "camp",
-      "ruin",
-      "mine",
-      "nexus-tower",
-    ]);
+    const types = landmarks.map((entry) => entry.type);
+    expect(types).toContain("village");
+    expect(types).toContain("desert-ruin");
+    expect(types).toContain("sunken-ruin");
+    expect(types).toContain("underground-ruin");
+    expect(types).toContain("ancient-machine");
+    expect(types).toContain("nexus-core");
+    expect(types.filter((type) => type === "village")).toHaveLength(2);
+    expect(types.filter((type) => type === "nexus-ruin")).toHaveLength(3);
     const village = landmarks[0]!;
     const coordinate = worldToChunk(village.x, village.z);
     const chunk = generateChunk("settlement-seed", coordinate.x, coordinate.z);
     expect(Array.from(chunk.blocks)).toContain(BlockId.Timber);
+  });
+
+  it("keeps final devices craft-only while distributing enough ruin components", () => {
+    const seed = "quest-resource-seed";
+    const landmarks = getWorldLandmarks(seed);
+    let oldComponents = 0;
+    let coreFragments = 0;
+    for (const landmark of landmarks) {
+      const coordinate = worldToChunk(landmark.x, landmark.z);
+      const local = worldToLocal(landmark.x, landmark.z);
+      const chunk = generateChunk(seed, coordinate.x, coordinate.z);
+      const base = terrainHeight(seed, landmark.x, landmark.z) + 1;
+      for (let y = base; y <= Math.min(63, base + 12); y += 1)
+        for (let offset = -3; offset <= 3; offset += 1) {
+          const localOffset = worldToLocal(landmark.x + offset, landmark.z);
+          if (worldToChunk(landmark.x + offset, landmark.z).x !== coordinate.x)
+            continue;
+          const block = getChunkBlock(chunk, localOffset.x, y, local.z);
+          oldComponents += Number(block === BlockId.OldComponent);
+          coreFragments += Number(block === BlockId.CoreFragment);
+          expect(block).not.toBe(BlockId.NexusDevice);
+          expect(block).not.toBe(BlockId.MachineKit);
+        }
+    }
+    expect(oldComponents).toBeGreaterThanOrEqual(9);
+    expect(coreFragments).toBeGreaterThanOrEqual(3);
   });
 
   it("keeps weather biome appropriate", () => {
@@ -177,6 +215,22 @@ describe("inventory and crafting", () => {
     expect(craftInventory(Array(9).fill(null), recipe)).toBeNull();
   });
 
+  it("provides a normal crafting path for the four-domain spectrum objective", () => {
+    const recipe = GAME_RECIPES.find(
+      (entry) => entry.id === "spectrum-crystal",
+    )!;
+    let inventory: Inventory = Array(9).fill(null);
+    for (const blockId of [
+      BlockId.SunShard,
+      BlockId.DuskShard,
+      BlockId.Tideglass,
+      BlockId.GlowCrystal,
+    ])
+      inventory = addToInventory(inventory, blockId, 1);
+    const crafted = craftInventory(inventory, recipe)!;
+    expect(countInventoryItem(crafted, BlockId.SpectrumCrystal)).toBe(4);
+  });
+
   it("moves, merges and swaps inventory stacks without item loss", () => {
     const inventory: Inventory = [
       { blockId: BlockId.Slate, count: 50 },
@@ -193,6 +247,61 @@ describe("inventory and crafting", () => {
     const moved = moveInventoryStack(swapped, 2, 3);
     expect(moved[2]).toBeNull();
     expect(moved[3]).toEqual({ blockId: BlockId.Slate, count: 6 });
+  });
+
+  it("transfers stacks to containers and preserves overflow", () => {
+    const source: Inventory = [{ blockId: BlockId.Slate, count: 64 }];
+    const destination: Inventory = [{ blockId: BlockId.Slate, count: 60 }];
+    const moved = transferInventoryStack(source, destination, 0);
+    expect(moved.moved).toBe(4);
+    expect(moved.source[0]?.count).toBe(60);
+    expect(moved.destination[0]?.count).toBe(64);
+  });
+
+  it("applies tool efficiency and removes a broken durable tool", () => {
+    const tool = {
+      blockId: BlockId.TrailTool,
+      count: 1,
+      durability: 1,
+      maxDurability: 96,
+    };
+    expect(miningSeconds(BlockId.Slate, tool)).toBeLessThan(
+      miningSeconds(BlockId.Slate, null),
+    );
+    expect(damageTool([tool], 0)[0]).toBeNull();
+  });
+
+  it("runs processor input, fuel, offline completion and output collection", () => {
+    const processor = {
+      id: "processor-1",
+      kind: "processor" as const,
+      position: [0.5, 2, 0.5] as const,
+      input: [],
+      fuel: [],
+      output: Array(3).fill(null),
+      revision: 0,
+    };
+    let inventory = addToInventory(Array(9).fill(null), BlockId.RawSunroot, 1);
+    inventory = addToInventory(inventory, BlockId.FuelCell, 1);
+    const started = startProcessor(
+      processor,
+      inventory,
+      "cook-sunroot",
+      "2026-01-01T00:00:00.000Z",
+    )!;
+    const ready = finishProcessor(
+      started.processor,
+      Date.parse("2026-01-01T00:00:20.000Z"),
+    );
+    expect(ready.output[0]).toEqual({
+      blockId: BlockId.CookedSunroot,
+      count: 1,
+    });
+    const collected = collectProcessorOutput(ready, started.inventory);
+    expect(countInventoryItem(collected.inventory, BlockId.CookedSunroot)).toBe(
+      1,
+    );
+    expect(isPersistableWorldEntity(collected.processor)).toBe(true);
   });
 });
 
@@ -253,6 +362,21 @@ describe("persistent farming", () => {
   it("calculates offline crop growth from its saved timestamp", () => {
     expect(cropGrowthStage(crop, Date.parse(crop.plantedAt) + 31_000)).toBe(1);
     expect(isCropMature(crop, Date.parse(crop.plantedAt) + 121_000)).toBe(true);
+  });
+
+  it("requires an excavator and cultivated soil for the farming loop", () => {
+    const tool = {
+      blockId: BlockId.TrailTool,
+      count: 1,
+      durability: 12,
+      maxDurability: 12,
+    };
+    expect(canCultivateSurface(BlockId.Verdant, tool)).toBe(true);
+    expect(canCultivateSurface(BlockId.Loam, tool)).toBe(true);
+    expect(canCultivateSurface(BlockId.Slate, tool)).toBe(false);
+    expect(canCultivateSurface(BlockId.Verdant, null)).toBe(false);
+    expect(canPlantCropOn(BlockId.CultivatedLoam)).toBe(true);
+    expect(canPlantCropOn(BlockId.Loam)).toBe(false);
   });
 });
 
@@ -317,6 +441,151 @@ describe("Nexus world quest", () => {
     expect(advanced.state.currentQuestLevel).toBe(10);
   });
 
+  it("counts every keyed deterministic structure during durable reconciliation", () => {
+    const restored = reconcilePersistentQuestProgress(
+      normalizeNexusQuestState({
+        currentQuestLevel: 39,
+        discoveredStructures: [
+          "nexus-ruin-10",
+          "nexus-ruin-11",
+          "nexus-ruin-12",
+        ],
+      }),
+    );
+    expect(restored.objectiveProgress["main-39:ruins"]).toBe(3);
+  });
+
+  it("requires all five resident professions and their distinct exchanges", () => {
+    let state = normalizeNexusQuestState({ currentQuestLevel: 42 });
+    const professions = [
+      "farmer",
+      "crafter",
+      "trader",
+      "explorer",
+      "researcher",
+    ];
+    state = applyGameplayEvent(state, {
+      id: "same-farmer-many-times",
+      type: "interactNPC",
+      key: "farmer",
+      amount: 99,
+    }).state;
+    expect(getCurrentQuest(state).level).toBe(42);
+    for (const profession of professions) {
+      state = applyGameplayEvent(state, {
+        id: `meet-${profession}`,
+        type: "interactNPC",
+        key: profession,
+      }).state;
+      state = applyGameplayEvent(state, {
+        id: `trade-${profession}`,
+        type: "trade",
+        key: profession,
+      }).state;
+    }
+    expect(getCurrentQuest(state).level).toBe(43);
+  });
+
+  it("has gameplay backing for every keyed main objective", () => {
+    const capabilities: Partial<Record<string, Set<string>>> = {
+      collect: new Set([
+        "timber",
+        "slate",
+        "nexus-crystal",
+        "food",
+        "forest-plant",
+        "dusk-shard",
+        "tideglass",
+        "old-component",
+        "settler-component",
+        "deep-alloy",
+        "waygate-fuel",
+        "expedition-food",
+        "crystal-spectrum",
+        "core-fragment",
+        "core-fuel",
+        "alliance-seal",
+      ]),
+      craft: new Set([
+        "trail-tool",
+        "node-calibrator",
+        "refined-material",
+        "nexus-conduit",
+        "engineer-core",
+        "frequency-core",
+        "expedition-gear",
+        "machine-kit",
+        "endgame-component",
+      ]),
+      place: new Set([
+        "crop",
+        "workstation",
+        "chest",
+        "path",
+        "nexus-conduit",
+        "nexus-light",
+      ]),
+      build: new Set([
+        "shelter",
+        "large-farm",
+        "village-workshop",
+        "mountain-relay",
+        "remote-base",
+        "waygate",
+        "base",
+        "final-relay",
+      ]),
+      harvest: new Set(["crop", "sungrain", "sunroot"]),
+      animalProduct: new Set(["egg", "milk", "wool"]),
+      interactNPC: new Set([
+        "farmer",
+        "crafter",
+        "trader",
+        "explorer",
+        "researcher",
+      ]),
+      trade: new Set([
+        "farmer",
+        "crafter",
+        "trader",
+        "explorer",
+        "researcher",
+        "alliance-seal",
+      ]),
+      activateNexus: new Set([
+        "swamp-pylon",
+        "regional-network",
+        "nine-node-sync",
+        "base-network",
+        "world-signal",
+        "ancient-machine",
+        "nexus-core",
+      ]),
+      repairNode: new Set(["tundra-node", "terminal-node"]),
+    };
+    const biomeIds = new Set(BIOMES.map((entry) => entry.id));
+    const structureIds = new Set(
+      getWorldLandmarks("quest-backing").map((entry) => entry.type),
+    );
+    for (const quest of MAIN_QUESTS)
+      for (const objective of quest.objectives) {
+        if (!objective.key) continue;
+        if (objective.type === "discoverBiome")
+          expect(biomeIds, `${quest.level}:${objective.key}`).toContain(
+            objective.key,
+          );
+        else if (objective.type === "discoverStructure")
+          expect(structureIds, `${quest.level}:${objective.key}`).toContain(
+            objective.key,
+          );
+        else
+          expect(
+            capabilities[objective.type],
+            `${quest.level}:${objective.type}:${objective.key}`,
+          )?.toContain(objective.key);
+      }
+  });
+
   it("enters post-game only after completing level fifty", () => {
     const finalState = normalizeNexusQuestState({
       currentQuestLevel: 50,
@@ -351,9 +620,82 @@ describe("Nexus world quest", () => {
     expect(completed.completedQuestIds).toContain("main-50");
   });
 
+  it("can traverse every objective from level one through post-game in order", () => {
+    let state = createNexusQuestState();
+    let sequence = 0;
+    while (!state.postGame && sequence < 500) {
+      const quest = getCurrentQuest(state);
+      for (const objective of quest.objectives) {
+        const result = applyGameplayEvent(state, {
+          id: `acceptance-${quest.level}-${objective.id}-${sequence++}`,
+          type: objective.type,
+          ...(objective.key ? { key: objective.key } : {}),
+          amount: objective.target,
+        });
+        state = result.state;
+        if (state.currentQuestLevel !== quest.level) break;
+      }
+    }
+    expect(state.postGame).toBe(true);
+    expect(state.completedQuestIds).toHaveLength(50);
+    expect(state.completedQuestIds[0]).toBe("main-01");
+    expect(state.completedQuestIds[49]).toBe("main-50");
+  });
+
+  it("runs resident side quests sequentially and preserves their progress", () => {
+    let state = acceptSideQuest(createNexusQuestState(), "farmer");
+    expect(state.acceptedSideQuestIds).toEqual(["side-farmer-fields"]);
+    state = applyGameplayEvent(state, {
+      id: "too-early",
+      type: "place",
+      key: "crop",
+      amount: 4,
+    }).state;
+    expect(state.sideQuestProgress["side-farmer-fields:field"] ?? 0).toBe(0);
+    state = applyGameplayEvent(state, {
+      id: "harvest",
+      type: "harvest",
+      key: "crop",
+      amount: 2,
+    }).state;
+    state = applyGameplayEvent(state, {
+      id: "seeds",
+      type: "collect",
+      key: "field-seed",
+      amount: 4,
+    }).state;
+    expect(
+      normalizeNexusQuestState(state).sideQuestProgress[
+        "side-farmer-fields:seeds"
+      ],
+    ).toBe(4);
+    expect(SIDE_QUESTS).toHaveLength(4);
+  });
+
+  it("reconciles terminal repairs and network activation into endgame progress", () => {
+    const state = reconcilePersistentQuestProgress(
+      normalizeNexusQuestState({
+        currentQuestLevel: 50,
+        repairedNodeIds: [
+          "terminal-node-a",
+          "terminal-node-b",
+          "terminal-node-c",
+        ],
+        discoveredStructures: ["nexus-core-prime"],
+        activatedNodeIds: ["nexus-core"],
+      }),
+    );
+    const quest = getCurrentQuest(state);
+    expect(
+      quest.objectives.map(
+        (entry) => state.objectiveProgress[`${quest.id}:${entry.id}`],
+      ),
+    ).toEqual([3, 3, 1, 1]);
+  });
+
   it("keeps portal node locations deterministic for a seed", () => {
     expect(getNexusNodes("quest-seed")).toEqual(getNexusNodes("quest-seed"));
-    expect(getNexusNodes("quest-seed")).toHaveLength(3);
+    expect(getNexusNodes("quest-seed")).toHaveLength(9);
   });
 
   it("consumes three glow crystals only when repairing a new node", () => {

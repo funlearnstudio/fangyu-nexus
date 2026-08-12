@@ -4,7 +4,7 @@
 
 > **NOT AN OFFICIAL MINECRAFT PRODUCT/SERVICE. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.**
 
-目前版本包含 Phase 1 Portal 工程基線，以及 Phase 2 原創 voxel sandbox 的第一個可玩 vertical slice。物品、搜尋、版別／版本切換、合成與熔煉計算器可實際操作；遊戲可建立 deterministic 世界、移動、跳躍、挖掘、放置、管理背包及保存本機進度。尚未串接正式 Minecraft 資料的區域會清楚標示 fixture、adapter pending 或 deferred，不會把示範資料冒充正式資料。
+目前版本包含 Portal 工程基線與直接整合在 `/play/world` 的原創 voxel survival game。物品、搜尋、版別／版本切換、合成與熔煉計算器可實際操作；遊戲可建立 deterministic 世界、探索十種生態系、完成 50 關 Nexus Journey、採集、建築、農耕、照料生物、使用聚落服務、加工資源及保存進度。尚未串接正式 Minecraft 資料的 Portal 區域會清楚標示 fixture，不會把示範資料冒充正式資料。
 
 ## 已落地功能
 
@@ -25,6 +25,10 @@
 - 16×64×16 chunk、Web Worker deterministic terrain、lazy load／unload、face-culling 單一 chunk mesh 與 frustum culling
 - 原創程序配色方塊、raycast 挖掘／放置、6-block reach、玩家 AABB 放置保護、selection outline
 - 36 格背包、stack count、1–9 hotbar、Survival／Creative、基礎合成、生命／飢餓／墜落傷害／死亡／重生
+- 50 關資料驅動 Nexus Journey、11 頁可跳過教學、Quest Journal、多階段居民支線與完成後永久 post-game
+- 十種具地形、植被、資源與水系差異的 biome；河流／海洋游泳、氧氣、洞穴、種子固定地標與天氣
+- Chicken／Cow／Pig／Sheep／Rabbit／Fish 實體、動物產物、兩種離線成長作物、聚落 NPC 排程與五職業交換
+- 可開關門、可持久儲存箱、組構／育種／Nexus／脈熱加工站、工具耐久與有限資源快速旅行
 - 日夜循環、sky、sunlight、fog、basic lighting、程序 oscillator SFX 與 debug overlay
 - IndexedDB local-first 存檔：世界 metadata、玩家狀態、背包與 modified chunk deltas；12 秒 autosave
 - MongoDB Atlas／local MongoDB hybrid persistence：PostgreSQL 保留 Portal relational data，MongoDB 保存動態世界 delta
@@ -82,18 +86,20 @@ pnpm dev
 
 ## 日常命令
 
-| 命令                | 功能                                                         |
-| ------------------- | ------------------------------------------------------------ |
-| `pnpm dev`          | 建置 shared packages，啟動 Web、API 與 workers 的 watch mode |
-| `pnpm build`        | Turborepo production build，並驗證可部署 Web artifact        |
-| `pnpm build:vercel` | 建置 Web 所需 shared packages，再執行原生 `next build`       |
-| `pnpm lint`         | ESLint，全 workspace 零 warning                              |
-| `pnpm typecheck`    | TypeScript project references 完整檢查                       |
-| `pnpm test`         | unit、API、game-rules 與 ping security tests                 |
-| `pnpm test:e2e`     | production build 後執行 API E2E tests                        |
-| `pnpm db:generate`  | 由 Drizzle schema 產生 SQL migration                         |
-| `pnpm db:migrate`   | 執行 PostgreSQL migrations                                   |
-| `pnpm db:seed`      | 寫入明確標記的 demo／fixture 資料                            |
+| 命令                      | 功能                                                         |
+| ------------------------- | ------------------------------------------------------------ |
+| `pnpm dev`                | 建置 shared packages，啟動 Web、API 與 workers 的 watch mode |
+| `pnpm build`              | Turborepo production build，並驗證可部署 Web artifact        |
+| `pnpm build:vercel`       | 建置 Web 所需 shared packages，再執行原生 `next build`       |
+| `pnpm lint`               | ESLint，全 workspace 零 warning                              |
+| `pnpm typecheck`          | TypeScript project references 完整檢查                       |
+| `pnpm test`               | unit、API、game-rules 與 ping security tests                 |
+| `pnpm test:e2e`           | production build 後執行 API E2E tests                        |
+| `pnpm playwright:install` | 將 Chromium 安裝到 repository-local ignored cache            |
+| `pnpm test:gameplay`      | 啟動真實 WebGL2 runtime，驗證挖礦、拾取與 reload persistence |
+| `pnpm db:generate`        | 由 Drizzle schema 產生 SQL migration                         |
+| `pnpm db:migrate`         | 執行 PostgreSQL migrations                                   |
+| `pnpm db:seed`            | 寫入明確標記的 demo／fixture 資料                            |
 
 停止 infrastructure：
 
@@ -145,6 +151,9 @@ infra/
 | Right Click | 放置所選方塊            |
 | `1`–`9`     | 選擇 hotbar             |
 | `E`         | 背包與合成              |
+| `J`         | Nexus Journey Journal   |
+| `H`         | 收成附近成熟作物        |
+| `R`         | 修復附近 Nexus 節點     |
 | `F3`        | 切換效能 debug overlay  |
 | `Esc`       | 釋放 Pointer Lock／暫停 |
 
@@ -160,7 +169,7 @@ infra/
 - Mongo 連線 helper 只存在 server module，使用 global cached `MongoClient` promise，失敗會釋放 cache 供下次 retry。
 - MongoDB 暫時不可用時 HUD 顯示 Offline，IndexedDB 存檔仍繼續；不會讓挖掘／放置等待 remote round trip。
 
-目前 ownership v1 使用伺服器簽署的 HttpOnly anonymous owner cookie，每個世界查詢與修改都加入 `ownerId` filter；猜測 world ID 不能跨 owner 讀取。Portal 正式會員登入 adapter 尚未完成，因此跨瀏覽器／跨裝置帳號同步仍標記 deferred，公開上線前應接入正式身份提供者。
+目前 ownership v1 使用伺服器簽署的 HttpOnly anonymous owner cookie，每個世界查詢與修改都加入 `ownerId` filter；猜測 world ID 不能跨 owner 讀取。相同 cookie 身份可使用 Atlas 保存世界；正式會員跨裝置身份仍需接入登入提供者，不能把 anonymous cookie 當成跨裝置帳號。
 
 ## 部署至 Vercel
 
@@ -212,6 +221,7 @@ GitHub Actions 會執行：
 - Vercel smoke：shared package build + 原生 Next production build
 - PostgreSQL service：migration 與 demo seed
 - Windows／macOS／Ubuntu smoke matrix：install、typecheck、test
+- Ubuntu Chromium + SwiftShader：真實 Canvas/WebGL2 遊戲 loop、黃／紫晶拾取與 IndexedDB reload 驗收
 
 ## 已知 Phase 1 限制
 
@@ -222,11 +232,11 @@ GitHub Actions 會執行：
 
 ## 已知遊戲限制
 
-- 水方塊已有 registry／fluid-level metadata 與 collision 邊界，但透明水面 renderer 仍為 experimental。
-- 洞穴是 deterministic 基礎生成，尚無洞穴生態、地下光照傳播或完整 ore distribution。
-- 一種被動生物與一種敵對生物可生成、移動、偵測、攻擊、受傷與消失；navigation、掉落物實體拾取與 entity persistence 仍是簡化架構。
-- Creative flying、music assets、容器、多人同步與 collaborative conflict resolution deferred。
-- 目前環境沒有 MongoDB Atlas credentials；Atlas integration 需要部署者提供 `MONGODB_URI`。local integration 使用 Docker Compose 的 `mongo:8`。
+- 流體採 deterministic 靜態水域，沒有昂貴的完整流體傳播 simulation。
+- 洞穴有 deterministic 通道、礦物與地下遺跡，但尚未實作全域 voxel 光照傳播。
+- 野生生物以玩家附近 simulation radius 與 population cap 運作；只有聚落附近的重要生物、NPC、容器、作物與掉落物需要持久化。
+- Creative flying、多人共同世界與 collaborative conflict resolution 尚未提供。
+- 目前 repository 不含 MongoDB Atlas credentials；Atlas 實際連線驗收需要部署者提供 `MONGODB_URI`。local integration 使用 Docker Compose 的 `mongo:8`。
 
 ## 品牌聲明
 

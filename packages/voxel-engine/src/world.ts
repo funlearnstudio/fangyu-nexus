@@ -28,9 +28,16 @@ export type LandmarkType =
   | "village"
   | "abandoned-home"
   | "camp"
-  | "ruin"
+  | "desert-ruin"
   | "mine"
-  | "nexus-tower";
+  | "nexus-tower"
+  | "cave"
+  | "sunken-ruin"
+  | "underground-ruin"
+  | "nexus-ruin"
+  | "ancient-machine"
+  | "endgame-ruin"
+  | "nexus-core";
 
 export interface WorldLandmark {
   id: string;
@@ -272,11 +279,23 @@ export function getWorldLandmarks(seedText: string): readonly WorldLandmark[] {
   const phase = (seed % 628) / 100;
   const specs = [
     ["village", "風徑聚落", ["plains", "forest"], 44, 88, 0],
+    ["village", "潮岸聚落", ["beach", "plains"], 180, 270, 0.45],
     ["abandoned-home", "遺忘居所", ["forest", "dense-forest"], 72, 140, 0.9],
     ["camp", "遠行者營地", ["plains", "desert"], 100, 180, 1.8],
-    ["ruin", "斷響遺跡", ["desert", "swamp"], 130, 230, 2.7],
+    ["desert-ruin", "斷響遺跡", ["desert"], 130, 230, 2.7],
     ["mine", "深紋礦口", ["mountain", "tundra"], 150, 260, 3.6],
     ["nexus-tower", "Nexus 遙塔", ["plains", "mountain"], 190, 310, 4.5],
+    ["cave", "回聲洞口", ["mountain", "forest"], 110, 210, 5.1],
+    ["sunken-ruin", "沉沒訊號柱", ["swamp", "river"], 220, 340, 5.7],
+    ["underground-ruin", "地底方城", ["mountain"], 280, 400, 0.7],
+    ["nexus-ruin", "琥珀古站", ["desert"], 320, 440, 1.4],
+    ["nexus-ruin", "潮藍古站", ["beach", "ocean"], 360, 480, 2.1],
+    ["nexus-ruin", "霜紫古站", ["tundra"], 400, 520, 2.8],
+    ["ancient-machine", "古代脈輪機", ["mountain"], 450, 580, 3.5],
+    ["endgame-ruin", "終局遺址一", ["desert"], 520, 680, 4.2],
+    ["endgame-ruin", "終局遺址二", ["swamp"], 560, 720, 4.9],
+    ["endgame-ruin", "終局遺址三", ["tundra"], 600, 760, 5.6],
+    ["nexus-core", "Nexus Core", ["mountain"], 720, 880, 0.2],
   ] as const;
   return specs.map(([type, name, biomes, min, max, offset], index) => {
     const [x, z] = findBiomeLocation(
@@ -403,7 +422,11 @@ function applyLandmarkBlocks(
           const wz = landmark.z + z;
           setWorld(wx, terrainHeight(seedText, wx, wz), wz, BlockId.Loam);
         }
-    } else if (landmark.type === "nexus-tower") {
+    } else if (
+      landmark.type === "nexus-tower" ||
+      landmark.type === "ancient-machine" ||
+      landmark.type === "nexus-core"
+    ) {
       const base = terrainHeight(seedText, landmark.x, landmark.z) + 1;
       for (let y = 0; y < 12; y += 1)
         for (let z = -2; z <= 2; z += 1)
@@ -415,15 +438,43 @@ function applyLandmarkBlocks(
                 landmark.z + z,
                 y > 8 ? BlockId.GlowCrystal : BlockId.Slate,
               );
-    } else if (landmark.type === "ruin" || landmark.type === "mine") {
+      if (landmark.type === "ancient-machine")
+        setWorld(landmark.x, base + 2, landmark.z, BlockId.NexusConduit);
+      if (landmark.type === "nexus-core")
+        setWorld(landmark.x, base + 12, landmark.z, BlockId.NexusLight);
+    } else if (
+      landmark.type === "desert-ruin" ||
+      landmark.type === "mine" ||
+      landmark.type === "underground-ruin" ||
+      landmark.type === "nexus-ruin" ||
+      landmark.type === "endgame-ruin" ||
+      landmark.type === "sunken-ruin" ||
+      landmark.type === "cave"
+    ) {
       const base = terrainHeight(seedText, landmark.x, landmark.z) + 1;
       for (let x = -5; x <= 5; x += 5)
         for (let z = -4; z <= 4; z += 4)
           for (let y = 0; y < 3 + ((x + z + 12) % 4); y += 1)
             setWorld(landmark.x + x, base + y, landmark.z + z, BlockId.Slate);
+      if (landmark.type === "endgame-ruin")
+        setWorld(landmark.x, base + 1, landmark.z, BlockId.CoreFragment);
+      else if (landmark.type === "sunken-ruin")
+        setWorld(landmark.x, base + 1, landmark.z, BlockId.Tideglass);
+      else {
+        setWorld(landmark.x, base + 1, landmark.z, BlockId.OldComponent);
+        setWorld(landmark.x + 2, base + 1, landmark.z, BlockId.OldComponent);
+      }
     } else if (landmark.type === "camp") {
       house(landmark.x, landmark.z, 5, 4);
-    } else house(landmark.x, landmark.z);
+      const base = terrainHeight(seedText, landmark.x, landmark.z) + 2;
+      setWorld(landmark.x, base, landmark.z, BlockId.OldComponent);
+    } else {
+      house(landmark.x, landmark.z);
+      if (landmark.type === "abandoned-home") {
+        const base = terrainHeight(seedText, landmark.x, landmark.z) + 2;
+        setWorld(landmark.x, base, landmark.z, BlockId.OldComponent);
+      }
+    }
   }
 }
 
@@ -470,6 +521,15 @@ export function generateChunk(
       }
 
       const treeChance = random2(seed, worldX, worldZ, 613);
+      const resourceChance = random2(seed, worldX, worldZ, 977);
+      if (
+        biome.id === "dense-forest" &&
+        resourceChance > 0.965 &&
+        height + 1 < WORLD_HEIGHT
+      )
+        blocks[voxelIndex(x, height + 1, z)] = BlockId.ResonantPlant;
+      if (biome.id === "ocean" && resourceChance > 0.94)
+        blocks[voxelIndex(x, height, z)] = BlockId.Tideglass;
       if (
         biome.treeDensity > 0 &&
         height + 6 < WORLD_HEIGHT &&

@@ -67,14 +67,116 @@ export interface NexusQuestState {
   discoveredBiomes: string[];
   discoveredStructures: string[];
   repairedNodeIds: string[];
+  activatedNodeIds: string[];
+  acceptedSideQuestIds: string[];
+  completedSideQuestIds: string[];
+  claimedSideQuestRewards: string[];
+  pendingSideQuestRewards: string[];
+  sideQuestProgress: Record<string, number>;
   processedEventIds: string[];
   postGame: boolean;
   beaconClaimed: boolean;
   completedAt?: string;
 }
 
+export interface SideQuestDefinition {
+  id: string;
+  profession: "farmer" | "crafter" | "trader" | "explorer" | "researcher";
+  title: string;
+  objectives: QuestObjectiveDefinition[];
+  reward: QuestReward;
+}
+
+const sideObjective = (
+  id: string,
+  type: QuestObjectiveType,
+  label: string,
+  key?: string,
+  target = 1,
+): QuestObjectiveDefinition => ({
+  id,
+  type,
+  label,
+  target,
+  ...(key ? { key } : {}),
+});
+
+export const SIDE_QUESTS: readonly SideQuestDefinition[] = [
+  {
+    id: "side-farmer-fields",
+    profession: "farmer",
+    title: "Fields Remember",
+    objectives: [
+      sideObjective("harvest", "harvest", "協助收成作物", "crop", 2),
+      sideObjective("seeds", "collect", "帶回日穗種子", "field-seed", 4),
+      sideObjective("field", "place", "補種聚落農田", "crop", 4),
+      sideObjective("sunroot", "harvest", "培育並收成日根", "sunroot", 1),
+    ],
+    reward: { label: "特殊日根種子", itemId: BlockId.RootSeed, count: 3 },
+  },
+  {
+    id: "side-trader-caravan",
+    profession: "trader",
+    title: "Caravan Ledger",
+    objectives: [
+      sideObjective("resource", "collect", "準備星砂", "dune", 4),
+      sideObjective("trade", "trade", "完成聚落交易", "field-seed", 1),
+      sideObjective(
+        "settlement",
+        "discoverStructure",
+        "找到第二座聚落",
+        "village",
+        2,
+      ),
+      sideObjective(
+        "advanced",
+        "trade",
+        "完成進階元件交易",
+        "alliance-seal",
+        1,
+      ),
+    ],
+    reward: { label: "聯盟憑證", itemId: BlockId.AllianceSeal, count: 1 },
+  },
+  {
+    id: "side-explorer-ruins",
+    profession: "explorer",
+    title: "Lines Beneath Stone",
+    objectives: [
+      sideObjective("ruin", "discoverStructure", "發現古代遺跡", "desert-ruin"),
+      sideObjective("artifact", "collect", "取回遺跡零件", "old-component"),
+      sideObjective("cave", "discoverStructure", "深入洞穴", "cave"),
+      sideObjective(
+        "site",
+        "discoverStructure",
+        "定位 Nexus 遺址",
+        "nexus-ruin",
+      ),
+    ],
+    reward: { label: "遠行燃料", itemId: BlockId.WaygateFuel, count: 2 },
+  },
+  {
+    id: "side-researcher-signal",
+    profession: "researcher",
+    title: "A Measured Signal",
+    objectives: [
+      sideObjective("sample", "collect", "取得晶體樣本", "nexus-crystal"),
+      sideObjective("process", "craft", "穩定晶體樣本", "refined-material"),
+      sideObjective("device", "craft", "製作節點校準器", "node-calibrator"),
+      sideObjective(
+        "repair",
+        "repairNode",
+        "修復一座 Nexus 節點",
+        undefined,
+        1,
+      ),
+    ],
+    reward: { label: "研究元件", itemId: BlockId.SettlerComponent, count: 2 },
+  },
+] as const;
+
 export interface NexusNode {
-  id: "amber" | "azure" | "violet";
+  id: string;
   name: string;
   position: readonly [number, number, number];
 }
@@ -297,7 +399,8 @@ const rawLevels: Array<
     "擴建農田並建立糧食儲備。",
     [
       objective("farm", "build", "建造大型農田", "large-farm"),
-      objective("harvest", "harvest", "收成兩種作物", undefined, 8),
+      objective("sungrain", "harvest", "收成日穗", "sungrain", 4),
+      objective("sunroot", "harvest", "收成日根", "sunroot", 4),
     ],
     "種子保存箱",
     ["advanced-farming"],
@@ -305,7 +408,11 @@ const rawLevels: Array<
   [
     "Herdcraft",
     "照料多種動物並取得可再生資源。",
-    [objective("products", "animalProduct", "取得三類動物產物", undefined, 3)],
+    [
+      objective("egg", "animalProduct", "拾取晨光蛋", "egg"),
+      objective("milk", "animalProduct", "以行瓶取得牧野乳", "milk"),
+      objective("wool", "animalProduct", "以纖維剪取得雲絨", "wool"),
+    ],
     "牧養設備",
     ["animal-management"],
   ],
@@ -507,8 +614,22 @@ const rawLevels: Array<
     "Voices of Five",
     "取得五位不同居民專家的協助。",
     [
-      objective("npcs", "interactNPC", "與五種職業居民合作", undefined, 5),
-      objective("trades", "trade", "完成專家交易", undefined, 5),
+      ...(
+        ["farmer", "crafter", "trader", "explorer", "researcher"] as const
+      ).flatMap((profession) => [
+        objective(
+          `meet-${profession}`,
+          "interactNPC",
+          `與 ${profession} 專家合作`,
+          profession,
+        ),
+        objective(
+          `trade-${profession}`,
+          "trade",
+          `完成 ${profession} 專業交換`,
+          profession,
+        ),
+      ]),
     ],
     "聚落聯盟",
     ["settler-alliance"],
@@ -668,6 +789,12 @@ export function createNexusQuestState(): NexusQuestState {
     discoveredBiomes: [],
     discoveredStructures: [],
     repairedNodeIds: [],
+    activatedNodeIds: [],
+    acceptedSideQuestIds: [],
+    completedSideQuestIds: [],
+    claimedSideQuestRewards: [],
+    pendingSideQuestRewards: [],
+    sideQuestProgress: {},
     processedEventIds: [],
     postGame: false,
     beaconClaimed: false,
@@ -691,6 +818,20 @@ export function normalizeNexusQuestState(
       new Set(state?.discoveredStructures ?? []),
     ),
     repairedNodeIds: Array.from(new Set(state?.repairedNodeIds ?? [])),
+    activatedNodeIds: Array.from(new Set(state?.activatedNodeIds ?? [])),
+    acceptedSideQuestIds: Array.from(
+      new Set(state?.acceptedSideQuestIds ?? []),
+    ),
+    completedSideQuestIds: Array.from(
+      new Set(state?.completedSideQuestIds ?? []),
+    ),
+    claimedSideQuestRewards: Array.from(
+      new Set(state?.claimedSideQuestRewards ?? []),
+    ),
+    pendingSideQuestRewards: Array.from(
+      new Set(state?.pendingSideQuestRewards ?? []),
+    ),
+    sideQuestProgress: state?.sideQuestProgress ?? {},
     processedEventIds: (state?.processedEventIds ?? []).slice(-128),
   };
 }
@@ -702,8 +843,7 @@ export function applyGameplayEvent(
   const state = reconcilePersistentQuestProgress(
     normalizeNexusQuestState(input),
   );
-  if (state.processedEventIds.includes(event.id) || state.postGame)
-    return { state };
+  if (state.processedEventIds.includes(event.id)) return { state };
   const quest = getCurrentQuest(state);
   const progress = { ...state.objectiveProgress };
   for (const entry of quest.objectives) {
@@ -720,9 +860,13 @@ export function applyGameplayEvent(
   const complete = quest.objectives.every(
     (entry) => (progress[`${quest.id}:${entry.id}`] ?? 0) >= entry.target,
   );
+  const withSideQuests = applySideQuestEvent(
+    { ...state, objectiveProgress: progress, processedEventIds },
+    event,
+  );
   if (!complete)
     return {
-      state: { ...state, objectiveProgress: progress, processedEventIds },
+      state: withSideQuests,
     };
   const completedQuestIds = Array.from(
     new Set([...state.completedQuestIds, quest.id]),
@@ -734,7 +878,7 @@ export function applyGameplayEvent(
   return {
     completedLevel: quest.level,
     state: {
-      ...state,
+      ...withSideQuests,
       currentQuestLevel: isFinal ? MAIN_QUEST_LEVELS : quest.level + 1,
       completedQuestIds,
       claimedRewards,
@@ -744,6 +888,61 @@ export function applyGameplayEvent(
       ...(isFinal ? { completedAt: new Date().toISOString() } : {}),
     },
   };
+}
+
+export function acceptSideQuest(
+  input: NexusQuestState,
+  profession: SideQuestDefinition["profession"],
+): NexusQuestState {
+  const state = normalizeNexusQuestState(input);
+  const definition = SIDE_QUESTS.find(
+    (entry) => entry.profession === profession,
+  );
+  if (!definition || state.completedSideQuestIds.includes(definition.id))
+    return state;
+  return {
+    ...state,
+    acceptedSideQuestIds: Array.from(
+      new Set([...state.acceptedSideQuestIds, definition.id]),
+    ),
+  };
+}
+
+function applySideQuestEvent(
+  input: NexusQuestState,
+  event: GameplayEvent,
+): NexusQuestState {
+  let state = input;
+  const progress = { ...state.sideQuestProgress };
+  const completed = new Set(state.completedSideQuestIds);
+  for (const questId of state.acceptedSideQuestIds) {
+    const definition = SIDE_QUESTS.find((entry) => entry.id === questId);
+    if (!definition || completed.has(questId)) continue;
+    const current = definition.objectives.find(
+      (entry) => (progress[`${questId}:${entry.id}`] ?? 0) < entry.target,
+    );
+    if (
+      !current ||
+      current.type !== event.type ||
+      (current.key && current.key !== event.key)
+    )
+      continue;
+    const key = `${questId}:${current.id}`;
+    progress[key] = Math.min(
+      current.target,
+      (progress[key] ?? 0) + Math.max(0, event.amount ?? 1),
+    );
+    const finished = definition.objectives.every(
+      (entry) => (progress[`${questId}:${entry.id}`] ?? 0) >= entry.target,
+    );
+    if (finished) completed.add(questId);
+  }
+  state = {
+    ...state,
+    sideQuestProgress: progress,
+    completedSideQuestIds: Array.from(completed),
+  };
+  return state;
 }
 
 /**
@@ -765,18 +964,30 @@ export function reconcilePersistentQuestProgress(
         : state.discoveredBiomes.length;
     } else if (entry.type === "discoverStructure") {
       durableProgress = entry.key
-        ? Number(
-            state.discoveredStructures.some(
-              (id) => id === entry.key || id.startsWith(`${entry.key}-`),
-            ),
-          )
+        ? state.discoveredStructures.filter(
+            (id) => id === entry.key || id.startsWith(`${entry.key}-`),
+          ).length
         : state.discoveredStructures.length;
     } else if (entry.type === "repairNode") {
       durableProgress = entry.key
-        ? Number(state.repairedNodeIds.includes(entry.key))
+        ? state.repairedNodeIds.filter(
+            (id) => id === entry.key || id.startsWith(`${entry.key}-`),
+          ).length
         : state.repairedNodeIds.length;
-    } else if (entry.type === "activateNexus" && !entry.key) {
-      durableProgress = Number(state.beaconClaimed);
+    } else if (entry.type === "activateNexus") {
+      if (entry.key === "world-signal")
+        durableProgress = state.repairedNodeIds.filter((id) =>
+          id.startsWith("terminal-node-"),
+        ).length;
+      else if (entry.key === "regional-network")
+        durableProgress = Number(state.repairedNodeIds.length >= 6);
+      else if (entry.key === "nine-node-sync")
+        durableProgress = Number(state.repairedNodeIds.length >= 9);
+      else if (entry.key === "base-network")
+        durableProgress = Number(state.repairedNodeIds.length >= 9);
+      else if (entry.key)
+        durableProgress = Number(state.activatedNodeIds.includes(entry.key));
+      else durableProgress = Number(state.beaconClaimed);
     }
     if (durableProgress === undefined) continue;
     const key = `${quest.id}:${entry.id}`;
@@ -804,6 +1015,12 @@ export function getNexusNodes(seed: string): readonly NexusNode[] {
     ["amber", "琥珀節點", 96, 18],
     ["azure", "蒼藍節點", -144, 117],
     ["violet", "暮紫節點", 72, -188],
+    ["tundra-node", "霜原節點", -238, -136],
+    ["swamp-node", "暮霧節點", 260, 94],
+    ["mountain-node", "高嶺節點", -310, 210],
+    ["terminal-node-a", "北方終端", 390, -255],
+    ["terminal-node-b", "潮境終端", -420, -300],
+    ["terminal-node-c", "天脊終端", 460, 330],
   ];
   return points.map(([id, name, x, z]) => ({
     id,

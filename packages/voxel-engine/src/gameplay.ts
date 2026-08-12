@@ -159,6 +159,8 @@ export function isShelterComplete(
 export interface InventoryStack {
   blockId: BlockIdValue;
   count: number;
+  durability?: number;
+  maxDurability?: number;
 }
 export type Inventory = Array<InventoryStack | null>;
 
@@ -171,7 +173,11 @@ export function addToInventory(
   const next = inventory.map((stack) => (stack ? { ...stack } : null));
   let remaining = count;
   for (const stack of next)
-    if (stack?.blockId === blockId && stack.count < maxStack) {
+    if (
+      stack?.blockId === blockId &&
+      stack.durability === undefined &&
+      stack.count < maxStack
+    ) {
       const added = Math.min(maxStack - stack.count, remaining);
       stack.count += added;
       remaining -= added;
@@ -196,7 +202,11 @@ export function addToInventoryWithRemainder(
   const next = inventory.map((stack) => (stack ? { ...stack } : null));
   let remaining = count;
   for (const stack of next)
-    if (stack?.blockId === blockId && stack.count < maxStack) {
+    if (
+      stack?.blockId === blockId &&
+      stack.durability === undefined &&
+      stack.count < maxStack
+    ) {
       const added = Math.min(maxStack - stack.count, remaining);
       stack.count += added;
       remaining -= added;
@@ -250,7 +260,11 @@ export function moveInventoryStack(
     next[from] = null;
     return next;
   }
-  if (target.blockId === source.blockId && target.count < maxStack) {
+  if (
+    target.blockId === source.blockId &&
+    target.durability === source.durability &&
+    target.count < maxStack
+  ) {
     const moved = Math.min(maxStack - target.count, source.count);
     target.count += moved;
     source.count -= moved;
@@ -262,11 +276,78 @@ export function moveInventoryStack(
   return next;
 }
 
+export function transferInventoryStack(
+  source: Inventory,
+  destination: Inventory,
+  sourceSlot: number,
+): { source: Inventory; destination: Inventory; moved: number } {
+  const stack = source[sourceSlot];
+  if (!stack) return { source, destination, moved: 0 };
+  const added = addToInventoryWithRemainder(
+    destination,
+    stack.blockId,
+    stack.count,
+  );
+  const moved = stack.count - added.remaining;
+  if (moved === 0) return { source, destination, moved: 0 };
+  return {
+    source: removeFromInventory(source, sourceSlot, moved) ?? source,
+    destination: added.inventory,
+    moved,
+  };
+}
+
 export interface GameRecipe {
   id: string;
   name: string;
   inputs: readonly InventoryStack[];
   output: InventoryStack;
+}
+
+export type ToolCategory = "excavator" | "shears";
+export function toolCategory(
+  stack: InventoryStack | null,
+): ToolCategory | null {
+  if (stack?.blockId === BlockId.TrailTool) return "excavator";
+  if (stack?.blockId === BlockId.FiberShears) return "shears";
+  return null;
+}
+
+export function canCultivateSurface(
+  blockId: BlockIdValue,
+  stack: InventoryStack | null,
+): boolean {
+  return (
+    toolCategory(stack) === "excavator" &&
+    (blockId === BlockId.Verdant || blockId === BlockId.Loam)
+  );
+}
+
+export function canPlantCropOn(blockId: BlockIdValue): boolean {
+  return blockId === BlockId.CultivatedLoam;
+}
+
+export function miningSeconds(
+  blockId: BlockIdValue,
+  stack: InventoryStack | null,
+): number {
+  const block = getBlockDefinition(blockId);
+  const category = toolCategory(stack);
+  const multiplier = category === "excavator" && block.hardness >= 1 ? 0.38 : 1;
+  return Math.max(0.12, block.hardness * multiplier);
+}
+
+export function damageTool(
+  inventory: Inventory,
+  slot: number,
+  amount = 1,
+): Inventory {
+  const next = inventory.map((stack) => (stack ? { ...stack } : null));
+  const stack = next[slot];
+  if (!stack || stack.maxDurability === undefined) return next;
+  stack.durability = (stack.durability ?? stack.maxDurability) - amount;
+  if (stack.durability <= 0) next[slot] = null;
+  return next;
 }
 export const GAME_RECIPES: readonly GameRecipe[] = [
   {
@@ -320,6 +401,202 @@ export const GAME_RECIPES: readonly GameRecipe[] = [
     ],
     output: { blockId: BlockId.TrailRation, count: 2 },
   },
+  {
+    id: "field-door",
+    name: "風木門",
+    inputs: [{ blockId: BlockId.Timber, count: 4 }],
+    output: { blockId: BlockId.FieldDoor, count: 1 },
+  },
+  {
+    id: "storage-chest",
+    name: "方域儲存箱",
+    inputs: [{ blockId: BlockId.Timber, count: 6 }],
+    output: { blockId: BlockId.StorageChest, count: 1 },
+  },
+  {
+    id: "craft-station",
+    name: "組構台",
+    inputs: [
+      { blockId: BlockId.Timber, count: 4 },
+      { blockId: BlockId.Slate, count: 2 },
+    ],
+    output: { blockId: BlockId.CraftStation, count: 1 },
+  },
+  {
+    id: "processor-station",
+    name: "脈熱加工站",
+    inputs: [
+      { blockId: BlockId.Slate, count: 6 },
+      { blockId: BlockId.CopperBloom, count: 2 },
+    ],
+    output: { blockId: BlockId.ProcessorStation, count: 1 },
+  },
+  {
+    id: "nexus-workbench",
+    name: "Nexus 工程台",
+    inputs: [
+      { blockId: BlockId.Timber, count: 4 },
+      { blockId: BlockId.GlowCrystal, count: 2 },
+    ],
+    output: { blockId: BlockId.NexusWorkbench, count: 1 },
+  },
+  {
+    id: "farm-station",
+    name: "育種台",
+    inputs: [
+      { blockId: BlockId.Timber, count: 3 },
+      { blockId: BlockId.Loam, count: 4 },
+      { blockId: BlockId.FieldSeed, count: 1 },
+    ],
+    output: { blockId: BlockId.FarmStation, count: 1 },
+  },
+  {
+    id: "fuel-cell",
+    name: "脈熱燃芯",
+    inputs: [
+      { blockId: BlockId.Timber, count: 1 },
+      { blockId: BlockId.Canopy, count: 1 },
+    ],
+    output: { blockId: BlockId.FuelCell, count: 2 },
+  },
+  {
+    id: "trail-path",
+    name: "星砂路磚",
+    inputs: [
+      { blockId: BlockId.Dune, count: 2 },
+      { blockId: BlockId.Slate, count: 1 },
+    ],
+    output: { blockId: BlockId.TrailPath, count: 4 },
+  },
+  {
+    id: "nexus-light",
+    name: "Nexus 光標",
+    inputs: [
+      { blockId: BlockId.GlowCrystal, count: 1 },
+      { blockId: BlockId.Timber, count: 1 },
+    ],
+    output: { blockId: BlockId.NexusLight, count: 2 },
+  },
+  {
+    id: "node-calibrator",
+    name: "節點校準器",
+    inputs: [
+      { blockId: BlockId.CopperBloom, count: 2 },
+      { blockId: BlockId.GlowCrystal, count: 1 },
+    ],
+    output: { blockId: BlockId.NodeCalibrator, count: 1 },
+  },
+  {
+    id: "nexus-conduit",
+    name: "Nexus 導管",
+    inputs: [
+      { blockId: BlockId.RefinedAlloy, count: 1 },
+      { blockId: BlockId.GlowCrystal, count: 1 },
+    ],
+    output: { blockId: BlockId.NexusConduit, count: 3 },
+  },
+  {
+    id: "engineer-core",
+    name: "工程核心",
+    inputs: [
+      { blockId: BlockId.RefinedAlloy, count: 2 },
+      { blockId: BlockId.SettlerComponent, count: 1 },
+      { blockId: BlockId.GlowCrystal, count: 2 },
+    ],
+    output: { blockId: BlockId.FrequencyCore, count: 1 },
+  },
+  {
+    id: "frequency-core",
+    name: "多域頻率核心",
+    inputs: [
+      { blockId: BlockId.Tideglass, count: 1 },
+      { blockId: BlockId.DuskShard, count: 1 },
+      { blockId: BlockId.SunShard, count: 1 },
+      { blockId: BlockId.RefinedAlloy, count: 1 },
+    ],
+    output: { blockId: BlockId.FrequencyCore, count: 1 },
+  },
+  {
+    id: "waygate-fuel",
+    name: "躍遷燃料",
+    inputs: [
+      { blockId: BlockId.ResonantPlant, count: 2 },
+      { blockId: BlockId.GlowCrystal, count: 1 },
+    ],
+    output: { blockId: BlockId.WaygateFuel, count: 2 },
+  },
+  {
+    id: "expedition-food",
+    name: "遠征補給箱",
+    inputs: [
+      { blockId: BlockId.TrailRation, count: 2 },
+      { blockId: BlockId.CookedSunroot, count: 2 },
+      { blockId: BlockId.SunEgg, count: 1 },
+    ],
+    output: { blockId: BlockId.ExpeditionFood, count: 4 },
+  },
+  {
+    id: "expedition-gear",
+    name: "遠征裝備",
+    inputs: [
+      { blockId: BlockId.DeepAlloy, count: 1 },
+      { blockId: BlockId.CloudWool, count: 2 },
+      { blockId: BlockId.Tideglass, count: 1 },
+    ],
+    output: { blockId: BlockId.ExpeditionGear, count: 1 },
+  },
+  {
+    id: "machine-kit",
+    name: "機械修復組",
+    inputs: [
+      { blockId: BlockId.RefinedAlloy, count: 1 },
+      { blockId: BlockId.NodeCalibrator, count: 1 },
+      { blockId: BlockId.OldComponent, count: 1 },
+    ],
+    output: { blockId: BlockId.MachineKit, count: 1 },
+  },
+  {
+    id: "spectrum-crystal",
+    name: "四域光譜晶簇",
+    inputs: [
+      { blockId: BlockId.SunShard, count: 1 },
+      { blockId: BlockId.DuskShard, count: 1 },
+      { blockId: BlockId.Tideglass, count: 1 },
+      { blockId: BlockId.GlowCrystal, count: 1 },
+    ],
+    output: { blockId: BlockId.SpectrumCrystal, count: 4 },
+  },
+  {
+    id: "endgame-component",
+    name: "終局元件",
+    inputs: [
+      { blockId: BlockId.CoreFragment, count: 1 },
+      { blockId: BlockId.SpectrumCrystal, count: 1 },
+      { blockId: BlockId.DeepAlloy, count: 1 },
+    ],
+    output: { blockId: BlockId.EndgameComponent, count: 1 },
+  },
+  {
+    id: "core-fuel",
+    name: "核心燃料",
+    inputs: [
+      { blockId: BlockId.WaygateFuel, count: 1 },
+      { blockId: BlockId.SunShard, count: 1 },
+      { blockId: BlockId.DuskShard, count: 1 },
+    ],
+    output: { blockId: BlockId.CoreFuel, count: 2 },
+  },
+  {
+    id: "nexus-device",
+    name: "Nexus 終端裝置",
+    inputs: [
+      { blockId: BlockId.EndgameComponent, count: 3 },
+      { blockId: BlockId.FrequencyCore, count: 1 },
+      { blockId: BlockId.AllianceSeal, count: 1 },
+      { blockId: BlockId.CoreFuel, count: 6 },
+    ],
+    output: { blockId: BlockId.NexusDevice, count: 1 },
+  },
 ];
 
 export function craftInventory(
@@ -349,5 +626,19 @@ export function craftInventory(
     }
   }
   next = addToInventory(next, recipe.output.blockId, recipe.output.count);
+  if (recipe.output.blockId === BlockId.TrailTool) {
+    const slot = next.findIndex(
+      (stack) => stack?.blockId === BlockId.TrailTool && !stack.maxDurability,
+    );
+    if (slot >= 0)
+      next[slot] = { ...next[slot]!, durability: 96, maxDurability: 96 };
+  }
+  if (recipe.output.blockId === BlockId.FiberShears) {
+    const slot = next.findIndex(
+      (stack) => stack?.blockId === BlockId.FiberShears && !stack.maxDurability,
+    );
+    if (slot >= 0)
+      next[slot] = { ...next[slot]!, durability: 64, maxDurability: 64 };
+  }
   return next;
 }

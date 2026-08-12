@@ -5,6 +5,9 @@ node_modules/
 dist/
 .next/
 coverage/
+.playwright-browsers/
+playwright-report/
+test-results/
 .wrangler/
 .sites-runtime/
 *.log

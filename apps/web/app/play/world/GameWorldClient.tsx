@@ -19,6 +19,8 @@ import {
   SEA_LEVEL,
   WORLD_HEIGHT,
   canPlaceBlock,
+  canCultivateSurface,
+  canPlantCropOn,
   addToInventoryWithRemainder,
   chunkKey,
   collidesWithWorld,
@@ -38,13 +40,22 @@ import {
   cropGrowthStage,
   isCropMature,
   isShelterComplete,
+  PROCESSING_RECIPES,
+  startProcessor,
+  finishProcessor,
+  collectProcessorOutput,
+  transferInventoryStack,
+  damageTool,
+  miningSeconds,
   raycastVoxels,
   removeFromInventory,
   moveInventoryStack,
   normalizeNexusQuestState,
   objectiveProgress,
   applyGameplayEvent,
+  acceptSideQuest,
   MAIN_QUESTS,
+  SIDE_QUESTS,
   repairNexusNode,
   setChunkBlock,
   terrainHeight,
@@ -55,6 +66,11 @@ import {
   type ChunkData,
   type ChunkMeshData,
   type CropEntity,
+  type CreatureEntity,
+  type ContainerEntity,
+  type ProcessorEntity,
+  type DoorEntity,
+  type NpcEntity,
   type DroppedItemEntity,
   type GameWorldMetadata,
   type GameplayEvent,
@@ -66,8 +82,10 @@ import {
   type WorldEntity,
   type WorldLandmark,
   type WeatherType,
+  type WorldBlockLookup,
 } from "@fangyu/voxel-engine";
 import {
+  createRuntimeId,
   getLocalChunk,
   getLocalPlayer,
   getLocalWorld,
@@ -90,10 +108,15 @@ type LoadedChunk = {
   entities: WorldEntity[];
   dirty: boolean;
   lastTouched: number;
+  serverRevision: number;
 };
 type RenderChunk = { key: string; revision: number; mesh: ChunkMeshData };
 type RenderDrop = DroppedItemEntity & { key: string };
 type RenderCrop = CropEntity & { key: string };
+type RenderDoor = DoorEntity & { key: string };
+type RenderNpc = NpcEntity & { key: string };
+type RenderCreature = CreatureEntity & { key: string };
+type InteractiveEntity = ContainerEntity | ProcessorEntity;
 type HudState = {
   position: [number, number, number];
   chunk: [number, number];
@@ -157,11 +180,25 @@ export function GameWorldClient() {
   const [paused, setPaused] = useState(true);
   const [inventoryOpen, setInventoryOpen] = useState(false);
   const [questOpen, setQuestOpen] = useState(false);
+  const [networkOpen, setNetworkOpen] = useState(false);
   const [tutorialPage, setTutorialPage] = useState<number | null>(null);
+  const [activeStation, setActiveStation] = useState<InteractiveEntity | null>(
+    null,
+  );
   const [debug, setDebug] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
+  const [rendererAvailable, setRendererAvailable] = useState<boolean | null>(
+    null,
+  );
   const [hud, setHud] = useState(emptyHud);
   const saveRef = useRef<SaveFunction>(async () => undefined);
+
+  useEffect(() => {
+    const probe = document.createElement("canvas");
+    setRendererAvailable(
+      Boolean(probe.getContext("webgl2") || probe.getContext("webgl")),
+    );
+  }, []);
 
   useEffect(() => {
     if (!worldId) return;
@@ -203,6 +240,21 @@ export function GameWorldClient() {
     return () => {
       window.removeEventListener("fangyu-debug", toggle);
       window.removeEventListener("fangyu-journal", journal);
+    };
+  }, []);
+
+  useEffect(() => {
+    const openStation = (event: Event) => {
+      document.exitPointerLock();
+      setActiveStation((event as CustomEvent<InteractiveEntity>).detail);
+    };
+    const updateStation = (event: Event) =>
+      setActiveStation((event as CustomEvent<InteractiveEntity>).detail);
+    window.addEventListener("fangyu-station-open", openStation);
+    window.addEventListener("fangyu-station-update", updateStation);
+    return () => {
+      window.removeEventListener("fangyu-station-open", openStation);
+      window.removeEventListener("fangyu-station-update", updateStation);
     };
   }, []);
 
@@ -268,32 +320,49 @@ export function GameWorldClient() {
       className="voxel-game"
       onContextMenu={(event) => event.preventDefault()}
     >
-      <Canvas
-        camera={{
-          fov: settings.fov,
-          near: 0.05,
-          far: Math.max(180, settings.renderDistance * CHUNK_SIZE * 2.2),
-        }}
-        gl={{
-          antialias: settings.quality !== "low",
-          powerPreference: "high-performance",
-        }}
-        dpr={settings.quality === "high" ? [1, 2] : [1, 1.35]}
-      >
-        <WorldRuntime
-          world={world}
-          initialPlayer={player}
-          settings={settings}
-          paused={paused || inventoryOpen}
-          setPaused={setPaused}
-          setInventoryOpen={setInventoryOpen}
-          onHud={setHud}
-          onSaveStatus={setSaveStatus}
-          registerSave={(save) => {
-            saveRef.current = save;
+      {rendererAvailable === null && (
+        <div className="renderer-fallback">正在檢查 3D renderer…</div>
+      )}
+      {rendererAvailable === false && (
+        <div className="renderer-fallback" role="alert">
+          <strong>此瀏覽器無法建立 WebGL renderer</strong>
+          <p>
+            世界存檔仍然安全。請開啟瀏覽器的硬體加速，或改用支援 WebGL2 的最新版
+            Chrome、Edge、Firefox 或 Safari。
+          </p>
+          <Link className="primary-link" href="/play/settings">
+            返回遊戲設定
+          </Link>
+        </div>
+      )}
+      {rendererAvailable && (
+        <Canvas
+          camera={{
+            fov: settings.fov,
+            near: 0.05,
+            far: Math.max(180, settings.renderDistance * CHUNK_SIZE * 2.2),
           }}
-        />
-      </Canvas>
+          gl={{
+            antialias: settings.quality !== "low",
+            powerPreference: "high-performance",
+          }}
+          dpr={settings.quality === "high" ? [1, 2] : [1, 1.35]}
+        >
+          <WorldRuntime
+            world={world}
+            initialPlayer={player}
+            settings={settings}
+            paused={paused || inventoryOpen || Boolean(activeStation)}
+            setPaused={setPaused}
+            setInventoryOpen={setInventoryOpen}
+            onHud={setHud}
+            onSaveStatus={setSaveStatus}
+            registerSave={(save) => {
+              saveRef.current = save;
+            }}
+          />
+        </Canvas>
+      )}
 
       <div className="crosshair" aria-hidden="true">
         <span />
@@ -350,17 +419,21 @@ export function GameWorldClient() {
         }
       </div>
       {debug && <DebugOverlay hud={hud} />}
-      {(paused || inventoryOpen) && tutorialPage === null && !questOpen && (
-        <PauseLayer
-          world={world}
-          inventoryOpen={inventoryOpen}
-          hud={hud}
-          resume={resume}
-          setInventoryOpen={setInventoryOpen}
-          openQuest={() => setQuestOpen(true)}
-          save={async () => saveRef.current()}
-        />
-      )}
+      {(paused || inventoryOpen) &&
+        tutorialPage === null &&
+        !questOpen &&
+        !networkOpen && (
+          <PauseLayer
+            world={world}
+            inventoryOpen={inventoryOpen}
+            hud={hud}
+            resume={resume}
+            setInventoryOpen={setInventoryOpen}
+            openQuest={() => setQuestOpen(true)}
+            openNetwork={() => setNetworkOpen(true)}
+            save={async () => saveRef.current()}
+          />
+        )}
       {questOpen && (
         <QuestJournal
           quest={hud.quest}
@@ -370,11 +443,26 @@ export function GameWorldClient() {
           }}
         />
       )}
+      {networkOpen && (
+        <NexusNetworkModal
+          seed={world.seed}
+          quest={hud.quest}
+          inventory={hud.inventory}
+          close={() => setNetworkOpen(false)}
+        />
+      )}
       {tutorialPage !== null && (
         <TutorialOverlay
           page={tutorialPage}
           setPage={setTutorialPage}
           finish={(skipped) => void finishTutorial(skipped)}
+        />
+      )}
+      {activeStation && (
+        <StationModal
+          station={activeStation}
+          playerInventory={hud.inventory}
+          close={() => setActiveStation(null)}
         />
       )}
       {hud.dead && (
@@ -409,7 +497,15 @@ function Hotbar({
         const stack = inventory[index];
         const block = getBlockDefinition(stack?.blockId ?? 0);
         return (
-          <div key={index} className={selected === index ? "selected" : ""}>
+          <div
+            key={index}
+            className={selected === index ? "selected" : ""}
+            title={
+              stack
+                ? `${block.name} × ${stack.count}${stack.maxDurability ? ` · 耐久 ${stack.durability ?? stack.maxDurability}/${stack.maxDurability}` : ""}`
+                : "空格"
+            }
+          >
             <kbd>{index + 1}</kbd>
             {stack ? (
               <>
@@ -420,6 +516,15 @@ function Hotbar({
                   }}
                 />
                 <small>{stack.count}</small>
+                {stack.maxDurability && (
+                  <i className="tool-durability">
+                    <span
+                      style={{
+                        width: `${Math.max(0, ((stack.durability ?? stack.maxDurability) / stack.maxDurability) * 100)}%`,
+                      }}
+                    />
+                  </i>
+                )}
               </>
             ) : null}
           </div>
@@ -519,7 +624,27 @@ function QuestJournal({
             <p>已發現生態系：{quest.discoveredBiomes.length}</p>
             <p>已發現地標：{quest.discoveredStructures.length}</p>
             <h3>Side Quests</h3>
-            <p>目前沒有已接受的支線任務。</p>
+            {quest.acceptedSideQuestIds.length === 0 && (
+              <p>與聚落居民交談可接受多階段支線任務。</p>
+            )}
+            {SIDE_QUESTS.filter((entry) =>
+              quest.acceptedSideQuestIds.includes(entry.id),
+            ).map((entry) => {
+              const done = quest.completedSideQuestIds.includes(entry.id);
+              const current = entry.objectives.find(
+                (objective) =>
+                  (quest.sideQuestProgress[`${entry.id}:${objective.id}`] ??
+                    0) < objective.target,
+              );
+              return (
+                <p key={entry.id} className={done ? "done" : ""}>
+                  {done ? "✓" : "◆"} {entry.title}
+                  {current
+                    ? ` — ${current.label} ${quest.sideQuestProgress[`${entry.id}:${current.id}`] ?? 0}/${current.target}`
+                    : " — 完成"}
+                </p>
+              );
+            })}
           </main>
         </div>
       </section>
@@ -619,6 +744,137 @@ function TutorialOverlay({
   );
 }
 
+function StationModal({
+  station,
+  playerInventory,
+  close,
+}: {
+  station: InteractiveEntity;
+  playerInventory: Inventory;
+  close: () => void;
+}) {
+  const slotButton = (
+    stack: Inventory[number],
+    index: number,
+    direction: "to-container" | "to-player",
+  ) => (
+    <button
+      type="button"
+      key={`${direction}-${index}`}
+      disabled={!stack}
+      onClick={() =>
+        window.dispatchEvent(
+          new CustomEvent("fangyu-container-transfer", {
+            detail: { id: station.id, direction, slot: index },
+          }),
+        )
+      }
+    >
+      {stack
+        ? `${getBlockDefinition(stack.blockId).name} × ${stack.count}`
+        : "EMPTY"}
+    </button>
+  );
+  const stationInventory =
+    station.kind === "container" ? station.inventory : station.output;
+  const elapsed =
+    station.kind === "processor" && station.startedAt
+      ? Math.max(0, (Date.now() - Date.parse(station.startedAt)) / 1000)
+      : 0;
+  const progress =
+    station.kind === "processor" && station.durationSeconds
+      ? Math.min(100, (elapsed / station.durationSeconds) * 100)
+      : 0;
+  return (
+    <div className="game-modal-backdrop">
+      <section
+        className="pause-menu station-modal"
+        role="dialog"
+        aria-modal="true"
+      >
+        <p className="eyebrow">
+          {station.kind === "container" ? "STORAGE" : "PROCESSOR"}
+        </p>
+        <h2>{station.kind === "container" ? "方域儲存箱" : "脈熱加工站"}</h2>
+        <h3>玩家背包（點擊移入）</h3>
+        <div className="station-slot-grid">
+          {playerInventory.map((stack, index) =>
+            slotButton(stack, index, "to-container"),
+          )}
+        </div>
+        <h3>{station.kind === "container" ? "箱內物品" : "加工輸出"}</h3>
+        <div className="station-slot-grid">
+          {stationInventory.map((stack, index) =>
+            slotButton(stack, index, "to-player"),
+          )}
+        </div>
+        {station.kind === "processor" && (
+          <>
+            <div className="processor-materials">
+              <div>
+                <h3>投入材料</h3>
+                <p>
+                  {station.input[0]
+                    ? `${getBlockDefinition(station.input[0].blockId).name} × ${station.input[0].count}`
+                    : "尚未投入"}
+                </p>
+              </div>
+              <div>
+                <h3>能源槽</h3>
+                <p>
+                  {station.fuel[0]
+                    ? `${getBlockDefinition(station.fuel[0].blockId).name} × ${station.fuel[0].count}`
+                    : "尚未投入"}
+                </p>
+              </div>
+            </div>
+            <div
+              className="processor-progress"
+              aria-label={`加工進度 ${Math.round(progress)}%`}
+            >
+              <i style={{ width: `${progress}%` }} />
+            </div>
+            <div className="recipe-list">
+              {PROCESSING_RECIPES.map((recipe) => (
+                <button
+                  type="button"
+                  key={recipe.id}
+                  disabled={Boolean(station.recipeId)}
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("fangyu-processor-start", {
+                        detail: { id: station.id, recipeId: recipe.id },
+                      }),
+                    )
+                  }
+                >
+                  {recipe.name}
+                  <small>{recipe.durationSeconds}s · 需要脈熱燃芯</small>
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() =>
+                  window.dispatchEvent(
+                    new CustomEvent("fangyu-processor-collect", {
+                      detail: { id: station.id },
+                    }),
+                  )
+                }
+              >
+                收取完成品
+              </button>
+            </div>
+          </>
+        )}
+        <button className="primary-link" type="button" onClick={close}>
+          關閉
+        </button>
+      </section>
+    </div>
+  );
+}
+
 function DebugOverlay({ hud }: { hud: HudState }) {
   return (
     <aside className="debug-overlay">
@@ -643,6 +899,60 @@ function DebugOverlay({ hud }: { hud: HudState }) {
   );
 }
 
+function NexusNetworkModal({
+  seed,
+  quest,
+  inventory,
+  close,
+}: {
+  seed: string;
+  quest: NexusQuestState;
+  inventory: Inventory;
+  close: () => void;
+}) {
+  const nodes = getNexusNodes(seed);
+  const fuel = countInventoryItem(inventory, BlockId.WaygateFuel);
+  return (
+    <div className="game-modal-backdrop">
+      <section
+        className="pause-menu network-modal"
+        role="dialog"
+        aria-modal="true"
+      >
+        <p className="eyebrow">NEXUS NETWORK</p>
+        <h2>節點快速旅行</h2>
+        <p>只可前往已修復的節點；每次消耗 1 枚遠行燃料。現有燃料：{fuel}</p>
+        <div className="recipe-list">
+          {nodes.map((node) => {
+            const repaired = quest.repairedNodeIds.includes(node.id);
+            return (
+              <button
+                type="button"
+                key={node.id}
+                disabled={!repaired || fuel < 1}
+                onClick={() => {
+                  window.dispatchEvent(
+                    new CustomEvent("fangyu-fast-travel", {
+                      detail: { nodeId: node.id },
+                    }),
+                  );
+                  close();
+                }}
+              >
+                {repaired ? "◆" : "◇"} {node.name}
+                <small>{repaired ? "已連線 · 消耗 1 燃料" : "尚未修復"}</small>
+              </button>
+            );
+          })}
+        </div>
+        <button className="primary-link" type="button" onClick={close}>
+          關閉
+        </button>
+      </section>
+    </div>
+  );
+}
+
 function PauseLayer({
   world,
   inventoryOpen,
@@ -650,6 +960,7 @@ function PauseLayer({
   resume,
   setInventoryOpen,
   openQuest,
+  openNetwork,
   save,
 }: {
   world: GameWorldMetadata;
@@ -658,6 +969,7 @@ function PauseLayer({
   resume: () => void;
   setInventoryOpen: (open: boolean) => void;
   openQuest: () => void;
+  openNetwork: () => void;
   save: () => Promise<void>;
 }) {
   const [craftMessage, setCraftMessage] = useState("");
@@ -704,7 +1016,12 @@ function PauseLayer({
                           }}
                         />
                         <b>{block.name}</b>
-                        <small>× {stack.count}</small>
+                        <small>
+                          × {stack.count}
+                          {stack.maxDurability
+                            ? ` · 耐久 ${stack.durability ?? stack.maxDurability}/${stack.maxDurability}`
+                            : ""}
+                        </small>
                       </>
                     ) : (
                       <small>EMPTY</small>
@@ -752,6 +1069,9 @@ function PauseLayer({
             </button>
             <button type="button" onClick={openQuest}>
               Quest Journal
+            </button>
+            <button type="button" onClick={openNetwork}>
+              Nexus Network
             </button>
             <Link href="/play/settings">Settings</Link>
             <button type="button" onClick={() => void save()}>
@@ -900,9 +1220,23 @@ function CropField({ crops }: { crops: readonly RenderCrop[] }) {
       dummy.rotation.y = index * 1.7;
       dummy.updateMatrix();
       mesh.current!.setMatrixAt(index, dummy.matrix);
+      mesh.current!.setColorAt(
+        index,
+        new THREE.Color(
+          crop.cropId === "sungrain"
+            ? stage >= 3
+              ? "#e5bf45"
+              : "#83a93a"
+            : stage >= 3
+              ? "#d97536"
+              : "#688f38",
+        ),
+      );
     });
     mesh.current.count = crops.length;
     mesh.current.instanceMatrix.needsUpdate = true;
+    if (mesh.current.instanceColor)
+      mesh.current.instanceColor.needsUpdate = true;
   }, [crops, dummy]);
   useEffect(update, [update]);
   useFrame((_, delta) => {
@@ -916,9 +1250,83 @@ function CropField({ crops }: { crops: readonly RenderCrop[] }) {
   return (
     <instancedMesh ref={mesh} args={[undefined, undefined, crops.length]}>
       <boxGeometry args={[0.28, 1, 0.28]} />
-      <meshLambertMaterial color="#d7b540" />
+      <meshLambertMaterial vertexColors />
     </instancedMesh>
   );
+}
+
+function DoorField({ doors }: { doors: readonly RenderDoor[] }) {
+  return doors.map((door) => (
+    <mesh
+      key={`${door.key}:${door.id}`}
+      position={[
+        door.position[0] + (door.open ? 0.42 : 0),
+        door.position[1] + 0.9,
+        door.position[2] + (door.open ? -0.42 : 0),
+      ]}
+      rotation={[0, door.open ? Math.PI / 2 : 0, 0]}
+    >
+      <boxGeometry args={[0.82, 1.8, 0.14]} />
+      <meshLambertMaterial color="#87552b" />
+    </mesh>
+  ));
+}
+
+function createVillageNpcs(seed: string, village: WorldLandmark): NpcEntity[] {
+  const definitions = [
+    ["Mira", "farmer", -10, -9, -2, 9],
+    ["Tor", "crafter", 10, -8, 3, -2],
+    ["Sela", "trader", -9, 10, 0, 0],
+    ["Ivo", "explorer", 11, 9, 7, 3],
+    ["Nara", "researcher", 11, 9, -5, -3],
+  ] as const;
+  return definitions.map(([name, profession, hx, hz, wx, wz], index) => {
+    const home = [
+      village.x + hx,
+      terrainHeight(seed, village.x + hx, village.z + hz) + 1,
+      village.z + hz,
+    ] as const;
+    const work = [
+      village.x + wx,
+      terrainHeight(seed, village.x + wx, village.z + wz) + 1,
+      village.z + wz,
+    ] as const;
+    return {
+      id: `${village.id}:settler-${index}`,
+      kind: "npc",
+      name,
+      profession,
+      position: home,
+      home,
+      work,
+      scheduleState: "home",
+      tradeCount: 0,
+      interactionFlags: [],
+      questStep: 0,
+    };
+  });
+}
+
+function createSettlementCreatures(seed: string): CreatureEntity[] {
+  const entries = [
+    ["chicken", 7, 6, 6],
+    ["cow", 11, 4, 12],
+    ["pig", -8, 7, 10],
+    ["sheep", -11, -5, 8],
+    ["rabbit", 4, -10, 5],
+  ] as const;
+  return entries.map(([species, x, z, health], index) => ({
+    id: `home-${species}-${index}`,
+    kind: "creature",
+    species,
+    position: [x, terrainHeight(seed, x, z) + 0.55, z],
+    health,
+    maxHealth: health,
+    persistent: true,
+    home: [x, terrainHeight(seed, x, z) + 0.55, z],
+    state: "idle",
+    ...(species === "sheep" ? { woolly: true } : {}),
+  }));
 }
 
 function WorldRuntime({
@@ -949,19 +1357,26 @@ function WorldRuntime({
       new Map<string, Map<number, BlockIdValue>>(),
     ),
     requestedEntities = useRef(new Map<string, WorldEntity[]>()),
+    requestedRevisions = useRef(new Map<string, number>()),
     worker = useRef<Worker | null>(null),
     requestId = useRef(0);
   const [renderChunks, setRenderChunks] = useState<RenderChunk[]>([]);
   const [renderDrops, setRenderDrops] = useState<RenderDrop[]>([]);
   const [renderCrops, setRenderCrops] = useState<RenderCrop[]>([]);
+  const [renderDoors, setRenderDoors] = useState<RenderDoor[]>([]);
+  const [renderNpcs, setRenderNpcs] = useState<RenderNpc[]>([]);
+  const [renderCreatures, setRenderCreatures] = useState<RenderCreature[]>([]);
   const position = useRef(new THREE.Vector3(...initialPlayer.position)),
     velocity = useRef(new THREE.Vector3()),
     yaw = useRef(initialPlayer.rotation[0]),
     pitch = useRef(initialPlayer.rotation[1]);
   const keys = useRef(new Set<string>()),
+    mouseButtons = useRef(new Set<number>()),
+    miningProgress = useRef<{ key: string; seconds: number } | null>(null),
     grounded = useRef(false),
     inventory = useRef(initialPlayer.inventory),
     selected = useRef(initialPlayer.selectedSlot),
+    playerServerRevision = useRef(initialPlayer.revision),
     health = useRef(initialPlayer.health),
     hunger = useRef(initialPlayer.hunger),
     oxygen = useRef(20),
@@ -1000,6 +1415,14 @@ function WorldRuntime({
       const coordinate = worldToChunk(x, z),
         local = worldToLocal(x, z),
         chunk = chunks.current.get(chunkKey(coordinate.x, coordinate.z));
+      const door = chunk?.entities.find(
+        (entity): entity is DoorEntity =>
+          entity.kind === "door" &&
+          Math.floor(entity.position[0]) === x &&
+          Math.floor(entity.position[1]) === y &&
+          Math.floor(entity.position[2]) === z,
+      );
+      if (door) return door.open ? BlockId.Air : BlockId.FieldDoor;
       return chunk
         ? getChunkBlock(chunk.data, local.x, y, local.z)
         : BlockId.Air;
@@ -1032,6 +1455,42 @@ function WorldRuntime({
           .map((entity) => ({ ...entity, key })),
       ).flat(),
     );
+    setRenderDoors(
+      Array.from(chunks.current, ([key, chunk]) =>
+        chunk.entities
+          .filter((entity): entity is DoorEntity => entity.kind === "door")
+          .map((entity) => ({ ...entity, key })),
+      ).flat(),
+    );
+    setRenderNpcs(
+      Array.from(chunks.current, ([key, chunk]) =>
+        chunk.entities
+          .filter((entity): entity is NpcEntity => entity.kind === "npc")
+          .map((entity) => ({ ...entity, key })),
+      ).flat(),
+    );
+    const nextCreatures = Array.from(chunks.current, ([key, chunk]) =>
+      chunk.entities
+        .filter(
+          (entity): entity is CreatureEntity => entity.kind === "creature",
+        )
+        .map((entity) => ({ ...entity, key })),
+    ).flat();
+    setRenderCreatures((previous) => {
+      const before = previous
+        .map(
+          (entry) =>
+            `${entry.id}:${entry.health}:${entry.lastProductAt ?? ""}:${entry.woolly ?? ""}`,
+        )
+        .join("|");
+      const after = nextCreatures
+        .map(
+          (entry) =>
+            `${entry.id}:${entry.health}:${entry.lastProductAt ?? ""}:${entry.woolly ?? ""}`,
+        )
+        .join("|");
+      return before === after ? previous : nextCreatures;
+    });
   }, []);
 
   const requestChunk = useCallback(
@@ -1039,9 +1498,23 @@ function WorldRuntime({
       const key = chunkKey(x, z);
       if (pending.current.has(key)) return;
       pending.current.add(key);
-      const local = existing
+      let local = existing
         ? null
         : await getLocalChunk(world.id, x, z).catch(() => undefined);
+      if (!existing && !local) {
+        const remote = await fetch(`/api/worlds/${world.id}/chunks/${x}/${z}`, {
+          cache: "no-store",
+        }).catch(() => null);
+        if (remote?.ok) {
+          const payload = (await remote.json()) as {
+            chunk?: PersistedChunkDelta | null;
+          };
+          if (payload.chunk) {
+            local = payload.chunk;
+            await putLocalChunk(payload.chunk).catch(() => undefined);
+          }
+        }
+      }
       const modifications = existing
         ? Array.from(existing.modifications)
         : (local?.modifiedBlocks ?? []);
@@ -1049,6 +1522,10 @@ function WorldRuntime({
       requestedEntities.current.set(
         key,
         existing?.entities ?? local?.entities ?? [],
+      );
+      requestedRevisions.current.set(
+        key,
+        existing?.serverRevision ?? local?.revision ?? 0,
       );
       worker.current?.postMessage({
         type: "generate",
@@ -1089,6 +1566,23 @@ function WorldRuntime({
         blocks: new Uint8Array(message.blocks),
         revision: (previous?.data.revision ?? 0) + 1,
       };
+      let entities =
+        previous?.entities ?? requestedEntities.current.get(key) ?? [];
+      const village = landmarks.find((landmark) => {
+        if (landmark.type !== "village") return false;
+        const coordinate = worldToChunk(landmark.x, landmark.z);
+        return (
+          coordinate.x === message.chunkX && coordinate.z === message.chunkZ
+        );
+      });
+      if (village && !entities.some((entity) => entity.kind === "npc"))
+        entities = [...entities, ...createVillageNpcs(world.seed, village)];
+      if (
+        message.chunkX === 0 &&
+        message.chunkZ === 0 &&
+        !entities.some((entity) => entity.kind === "creature")
+      )
+        entities = [...entities, ...createSettlementCreatures(world.seed)];
       chunks.current.set(key, {
         data,
         mesh: {
@@ -1102,18 +1596,32 @@ function WorldRuntime({
           previous?.modifications ??
           requestedModifications.current.get(key) ??
           new Map(),
-        entities:
-          previous?.entities ?? requestedEntities.current.get(key) ?? [],
+        entities,
         dirty:
           previous?.dirty ??
-          (requestedModifications.current.get(key)?.size ?? 0) > 0,
+          ((requestedModifications.current.get(key)?.size ?? 0) > 0 ||
+            Boolean(
+              village &&
+                !(requestedEntities.current.get(key) ?? []).some(
+                  (entity) => entity.kind === "npc",
+                ),
+            ) ||
+            Boolean(
+              message.chunkX === 0 &&
+                message.chunkZ === 0 &&
+                !(requestedEntities.current.get(key) ?? []).some(
+                  (entity) => entity.kind === "creature",
+                ),
+            )),
         lastTouched: performance.now(),
+        serverRevision:
+          previous?.serverRevision ?? requestedRevisions.current.get(key) ?? 0,
       });
       pending.current.delete(key);
       publishChunks();
     };
     return () => generator.terminate();
-  }, [publishChunks]);
+  }, [landmarks, publishChunks, world.seed]);
 
   const beep = useCallback(
     (frequency: number) => {
@@ -1138,6 +1646,16 @@ function WorldRuntime({
 
   const emitQuestEvent = useCallback(
     (event: Omit<GameplayEvent, "id"> & { id?: string }) => {
+      if (
+        event.type === "activateNexus" &&
+        event.key &&
+        !quest.current.activatedNodeIds.includes(event.key)
+      )
+        quest.current = {
+          ...quest.current,
+          activatedNodeIds: [...quest.current.activatedNodeIds, event.key],
+        };
+      const previousSideQuests = new Set(quest.current.completedSideQuestIds);
       const result = applyGameplayEvent(quest.current, {
         ...event,
         id:
@@ -1145,6 +1663,48 @@ function WorldRuntime({
           `${world.id}:${Date.now()}:${++questEventSequence.current}`,
       });
       quest.current = result.state;
+      for (const completedId of result.state.completedSideQuestIds) {
+        if (previousSideQuests.has(completedId)) continue;
+        const reward = SIDE_QUESTS.find(
+          (entry) => entry.id === completedId,
+        )?.reward;
+        if (reward?.itemId && reward.count) {
+          const granted = addToInventoryWithRemainder(
+            inventory.current,
+            reward.itemId,
+            reward.count,
+          );
+          if (granted.remaining === 0) {
+            inventory.current = granted.inventory;
+            quest.current = {
+              ...quest.current,
+              claimedSideQuestRewards: Array.from(
+                new Set([
+                  ...quest.current.claimedSideQuestRewards,
+                  completedId,
+                ]),
+              ),
+              pendingSideQuestRewards:
+                quest.current.pendingSideQuestRewards.filter(
+                  (id) => id !== completedId,
+                ),
+            };
+            questMessage.current = `支線完成：${reward.label} 已加入背包。`;
+          } else {
+            quest.current = {
+              ...quest.current,
+              pendingSideQuestRewards: Array.from(
+                new Set([
+                  ...quest.current.pendingSideQuestRewards,
+                  completedId,
+                ]),
+              ),
+            };
+            questMessage.current =
+              "支線完成，但背包空間不足；獎勵已保留，整理後再與委託居民交談。";
+          }
+        }
+      }
       if (result.completedLevel) {
         const next = getCurrentQuest(result.state);
         questMessage.current = result.state.postGame
@@ -1157,9 +1717,10 @@ function WorldRuntime({
   );
 
   const changeBlock = useCallback(
-    (button: number) => {
-      if (!document.pointerLockElement || dead.current) return;
-      const current = hit.current;
+    (button: number, overrideHit?: RaycastHit, bypassPointerLock = false) => {
+      if ((!bypassPointerLock && !document.pointerLockElement) || dead.current)
+        return;
+      const current = overrideHit ?? hit.current;
       if (!current) return;
       if (button === 0) {
         window.dispatchEvent(new CustomEvent("fangyu-attack"));
@@ -1167,6 +1728,16 @@ function WorldRuntime({
           local = worldToLocal(current.block.x, current.block.z),
           chunk = chunks.current.get(chunkKey(coordinate.x, coordinate.z));
         if (!chunk) return;
+        const attached = chunk.entities.filter(
+          (entity) =>
+            "position" in entity &&
+            Math.floor(entity.position[0]) === current.block.x &&
+            Math.floor(entity.position[1]) === current.block.y &&
+            Math.floor(entity.position[2]) === current.block.z,
+        );
+        chunk.entities = chunk.entities.filter(
+          (entity) => !attached.includes(entity),
+        );
         setChunkBlock(
           chunk.data,
           local.x,
@@ -1184,9 +1755,25 @@ function WorldRuntime({
           key: getBlockDefinition(current.blockId).key,
         });
         if (world.gameMode === "survival") {
+          for (const entity of attached)
+            if (entity.kind === "container")
+              for (const stored of entity.inventory)
+                if (stored)
+                  chunk.entities.push({
+                    id: createRuntimeId(),
+                    kind: "dropped-item",
+                    itemId: stored.blockId,
+                    count: stored.count,
+                    position: [
+                      current.block.x + 0.5,
+                      current.block.y + 0.55,
+                      current.block.z + 0.5,
+                    ],
+                    createdAt: new Date().toISOString(),
+                  });
           for (const loot of getBlockLoot(current.blockId))
             chunk.entities.push({
-              id: crypto.randomUUID(),
+              id: createRuntimeId(),
               kind: "dropped-item",
               itemId: loot.itemId,
               count: loot.count,
@@ -1198,26 +1785,148 @@ function WorldRuntime({
               createdAt: new Date().toISOString(),
             });
         }
+        if (inventory.current[selected.current]?.maxDurability)
+          inventory.current = damageTool(inventory.current, selected.current);
         void requestChunk(coordinate.x, coordinate.z, chunk);
         publishChunks();
         beep(132);
       } else if (button === 2) {
+        const currentCoordinate = worldToChunk(
+            current.block.x,
+            current.block.z,
+          ),
+          currentChunk = chunks.current.get(
+            chunkKey(currentCoordinate.x, currentCoordinate.z),
+          );
+        const interactive = currentChunk?.entities.find(
+          (entity) =>
+            (entity.kind === "door" ||
+              entity.kind === "container" ||
+              entity.kind === "processor") &&
+            Math.floor(entity.position[0]) === current.block.x &&
+            Math.floor(entity.position[1]) === current.block.y &&
+            Math.floor(entity.position[2]) === current.block.z,
+        );
+        if (interactive?.kind === "door") {
+          interactive.open = !interactive.open;
+          currentChunk!.dirty = true;
+          publishChunks();
+          beep(interactive.open ? 260 : 210);
+          return;
+        }
+        if (
+          interactive?.kind === "container" ||
+          interactive?.kind === "processor"
+        ) {
+          window.dispatchEvent(
+            new CustomEvent("fangyu-station-open", { detail: interactive }),
+          );
+          return;
+        }
+        if (!interactive) {
+          const nearbyDoor = Array.from(chunks.current.values())
+            .flatMap((entry) =>
+              entry.entities
+                .filter(
+                  (entity): entity is DoorEntity =>
+                    entity.kind === "door" && entity.open,
+                )
+                .map((entity) => ({ chunk: entry, entity })),
+            )
+            .find(
+              ({ entity }) =>
+                Math.hypot(
+                  entity.position[0] - (current.previous.x + 0.5),
+                  entity.position[1] - current.previous.y,
+                  entity.position[2] - (current.previous.z + 0.5),
+                ) < 1.1,
+            );
+          if (nearbyDoor) {
+            nearbyDoor.entity.open = false;
+            nearbyDoor.chunk.dirty = true;
+            publishChunks();
+            beep(210);
+            return;
+          }
+        }
+        if (
+          current.blockId === BlockId.CraftStation ||
+          current.blockId === BlockId.NexusWorkbench
+        ) {
+          document.exitPointerLock();
+          setInventoryOpen(true);
+          return;
+        }
+        const cultivationTool = inventory.current[selected.current] ?? null;
+        if (canCultivateSurface(current.blockId, cultivationTool)) {
+          const coordinate = worldToChunk(current.block.x, current.block.z),
+            local = worldToLocal(current.block.x, current.block.z),
+            chunk = chunks.current.get(chunkKey(coordinate.x, coordinate.z));
+          if (!chunk) return;
+          setChunkBlock(
+            chunk.data,
+            local.x,
+            current.block.y,
+            local.z,
+            BlockId.CultivatedLoam,
+          );
+          chunk.modifications.set(
+            voxelIndex(local.x, current.block.y, local.z),
+            BlockId.CultivatedLoam,
+          );
+          chunk.dirty = true;
+          inventory.current = damageTool(inventory.current, selected.current);
+          emitQuestEvent({ type: "place", key: "cultivated-field" });
+          publishChunks();
+          questMessage.current = "土地已整理為培田土，可播下日穗或日根種子。";
+          beep(250);
+          return;
+        }
+        if (current.blockId === BlockId.FarmStation) {
+          const withoutSeed = consumeInventoryItem(
+            inventory.current,
+            BlockId.FieldSeed,
+            1,
+          );
+          const withoutSoil = withoutSeed
+            ? consumeInventoryItem(withoutSeed, BlockId.Loam, 1)
+            : null;
+          if (!withoutSoil) {
+            questMessage.current = "育種台需要 1 日穗種子與 1 壤土。";
+            return;
+          }
+          inventory.current = addToInventoryWithRemainder(
+            withoutSoil,
+            BlockId.RootSeed,
+            2,
+          ).inventory;
+          questMessage.current = "育種完成：取得 2 枚日根種子。";
+          beep(420);
+          return;
+        }
         const stack = inventory.current[selected.current];
         if (!stack) return;
-        if (stack.blockId === BlockId.FieldSeed) {
+        if (
+          stack.blockId === BlockId.FieldSeed ||
+          stack.blockId === BlockId.RootSeed
+        ) {
           const target = current.previous;
           const soil = lookup(target.x, target.y - 1, target.z);
-          if (soil !== BlockId.Loam && soil !== BlockId.Verdant) return;
+          if (!canPlantCropOn(soil)) {
+            questMessage.current = "種子只能播在以拓荒鑿整好的培田土上。";
+            return;
+          }
           const coordinate = worldToChunk(target.x, target.z),
             chunk = chunks.current.get(chunkKey(coordinate.x, coordinate.z));
           if (!chunk) return;
           chunk.entities.push({
-            id: crypto.randomUUID(),
+            id: createRuntimeId(),
             kind: "crop",
-            cropId: "sungrain",
+            cropId:
+              stack.blockId === BlockId.FieldSeed ? "sungrain" : "sunroot",
             position: [target.x + 0.5, target.y, target.z + 0.5],
             plantedAt: new Date().toISOString(),
-            growthSeconds: 120,
+            growthSeconds: stack.blockId === BlockId.FieldSeed ? 120 : 180,
           });
           chunk.dirty = true;
           inventory.current =
@@ -1230,7 +1939,8 @@ function WorldRuntime({
         }
         if (
           stack.blockId === BlockId.TrailRation ||
-          stack.blockId === BlockId.MeadowMilk
+          stack.blockId === BlockId.MeadowMilk ||
+          stack.blockId === BlockId.CookedSunroot
         ) {
           if (hunger.current >= 20) return;
           inventory.current =
@@ -1238,9 +1948,55 @@ function WorldRuntime({
             inventory.current;
           hunger.current = Math.min(
             20,
-            hunger.current + (stack.blockId === BlockId.TrailRation ? 8 : 3),
+            hunger.current +
+              (stack.blockId === BlockId.TrailRation
+                ? 8
+                : stack.blockId === BlockId.CookedSunroot
+                  ? 5
+                  : 3),
           );
           beep(330);
+          return;
+        }
+        if (
+          stack.blockId === BlockId.MachineKit ||
+          stack.blockId === BlockId.NexusDevice ||
+          stack.blockId === BlockId.NodeCalibrator
+        ) {
+          const nearestLandmark = landmarks
+            .map((landmark) => ({
+              landmark,
+              distance: Math.hypot(
+                position.current.x - landmark.x,
+                position.current.z - landmark.z,
+              ),
+            }))
+            .sort((a, b) => a.distance - b.distance)[0];
+          const valid =
+            nearestLandmark &&
+            nearestLandmark.distance <= 18 &&
+            ((stack.blockId === BlockId.MachineKit &&
+              nearestLandmark.landmark.type === "ancient-machine") ||
+              (stack.blockId === BlockId.NexusDevice &&
+                nearestLandmark.landmark.type === "nexus-core") ||
+              (stack.blockId === BlockId.NodeCalibrator &&
+                nearestLandmark.landmark.type === "sunken-ruin"));
+          if (!valid) {
+            questMessage.current = "此裝置必須在對應的 Nexus 遺址中安裝。";
+            return;
+          }
+          inventory.current =
+            removeFromInventory(inventory.current, selected.current, 1) ??
+            inventory.current;
+          const key =
+            stack.blockId === BlockId.MachineKit
+              ? "ancient-machine"
+              : stack.blockId === BlockId.NexusDevice
+                ? "nexus-core"
+                : "swamp-pylon";
+          emitQuestEvent({ type: "activateNexus", key });
+          questMessage.current = `${nearestLandmark.landmark.name} 已完成啟動程序。`;
+          beep(760);
           return;
         }
         if (!getBlockDefinition(stack.blockId).solid) return;
@@ -1259,22 +2015,100 @@ function WorldRuntime({
           local = worldToLocal(current.previous.x, current.previous.z),
           chunk = chunks.current.get(chunkKey(coordinate.x, coordinate.z));
         if (!chunk) return;
+        const customDoor = stack.blockId === BlockId.FieldDoor;
         setChunkBlock(
           chunk.data,
           local.x,
           current.previous.y,
           local.z,
-          stack.blockId,
+          customDoor ? BlockId.Air : stack.blockId,
         );
         chunk.modifications.set(
           voxelIndex(local.x, current.previous.y, local.z),
-          stack.blockId,
+          customDoor ? BlockId.Air : stack.blockId,
         );
+        if (customDoor)
+          chunk.entities.push({
+            id: createRuntimeId(),
+            kind: "door",
+            position: [
+              current.previous.x + 0.5,
+              current.previous.y,
+              current.previous.z + 0.5,
+            ],
+            open: false,
+          });
+        if (stack.blockId === BlockId.StorageChest)
+          chunk.entities.push({
+            id: createRuntimeId(),
+            kind: "container",
+            position: [
+              current.previous.x + 0.5,
+              current.previous.y,
+              current.previous.z + 0.5,
+            ],
+            inventory: Array(27).fill(null),
+            revision: 0,
+          });
+        if (stack.blockId === BlockId.ProcessorStation)
+          chunk.entities.push({
+            id: createRuntimeId(),
+            kind: "processor",
+            position: [
+              current.previous.x + 0.5,
+              current.previous.y,
+              current.previous.z + 0.5,
+            ],
+            input: [],
+            fuel: [],
+            output: Array(3).fill(null),
+            revision: 0,
+          });
         chunk.dirty = true;
         emitQuestEvent({
           type: "place",
           key: getBlockDefinition(stack.blockId).key,
         });
+        if (
+          stack.blockId === BlockId.CraftStation ||
+          stack.blockId === BlockId.ProcessorStation ||
+          stack.blockId === BlockId.FarmStation ||
+          stack.blockId === BlockId.NexusWorkbench
+        )
+          emitQuestEvent({ type: "place", key: "workstation" });
+        if (
+          stack.blockId === BlockId.StorageChest &&
+          Math.hypot(position.current.x, position.current.z) > 180
+        ) {
+          emitQuestEvent({ type: "build", key: "remote-base" });
+          emitQuestEvent({ type: "build", key: "base" });
+        }
+        if (stack.blockId === BlockId.FarmStation) {
+          emitQuestEvent({ type: "build", key: "large-farm" });
+          emitQuestEvent({ type: "build", key: "village-workshop" });
+        }
+        if (stack.blockId === BlockId.NexusWorkbench) {
+          const nearNode = nexusNodes.some(
+            (node) =>
+              quest.current.repairedNodeIds.includes(node.id) &&
+              Math.hypot(
+                current.previous.x - node.position[0],
+                current.previous.z - node.position[2],
+              ) <= 7,
+          );
+          if (nearNode) emitQuestEvent({ type: "build", key: "waygate" });
+        }
+        if (stack.blockId === BlockId.NexusConduit) {
+          const biome = getBiomeAt(
+            world.seed,
+            current.previous.x,
+            current.previous.z,
+          );
+          if (biome.id === "mountain")
+            emitQuestEvent({ type: "build", key: "mountain-relay" });
+          if (Math.hypot(current.previous.x, current.previous.z) > 350)
+            emitQuestEvent({ type: "build", key: "final-relay" });
+        }
         if (
           isShelterComplete(
             [position.current.x, position.current.y, position.current.z],
@@ -1294,7 +2128,17 @@ function WorldRuntime({
         beep(196);
       }
     },
-    [beep, emitQuestEvent, lookup, publishChunks, requestChunk, world.gameMode],
+    [
+      beep,
+      emitQuestEvent,
+      landmarks,
+      nexusNodes,
+      lookup,
+      publishChunks,
+      requestChunk,
+      world.gameMode,
+      world.seed,
+    ],
   );
 
   const repairNearestNode = useCallback(() => {
@@ -1327,6 +2171,16 @@ function WorldRuntime({
     quest.current = repaired.state;
     inventory.current = repaired.inventory;
     emitQuestEvent({ type: "repairNode", key: nearest.node.id });
+    if (nearest.node.id === "swamp-node")
+      emitQuestEvent({ type: "activateNexus", key: "swamp-pylon" });
+    if (nearest.node.id.startsWith("terminal-node-"))
+      emitQuestEvent({ type: "activateNexus", key: "world-signal" });
+    if (quest.current.repairedNodeIds.length >= 6)
+      emitQuestEvent({ type: "activateNexus", key: "regional-network" });
+    if (quest.current.repairedNodeIds.length >= 9) {
+      emitQuestEvent({ type: "activateNexus", key: "nine-node-sync" });
+      emitQuestEvent({ type: "activateNexus", key: "base-network" });
+    }
     questMessage.current = `${nearest.node.name} 已修復。Nexus Journey 已記錄進度。`;
     beep(660);
   }, [beep, emitQuestEvent, nexusNodes]);
@@ -1350,16 +2204,12 @@ function WorldRuntime({
         questMessage.current = `日穗尚未成熟（階段 ${cropGrowthStage(crop) + 1}/4）。`;
         return;
       }
-      const grain = addToInventoryWithRemainder(
-        inventory.current,
-        BlockId.Sungrain,
-        2,
-      );
-      const seeds = addToInventoryWithRemainder(
-        grain.inventory,
-        BlockId.FieldSeed,
-        2,
-      );
+      const cropItem =
+        crop.cropId === "sungrain" ? BlockId.Sungrain : BlockId.RawSunroot;
+      const seedItem =
+        crop.cropId === "sungrain" ? BlockId.FieldSeed : BlockId.RootSeed;
+      const grain = addToInventoryWithRemainder(inventory.current, cropItem, 2);
+      const seeds = addToInventoryWithRemainder(grain.inventory, seedItem, 2);
       if (grain.remaining > 0 || seeds.remaining > 0) {
         questMessage.current = "背包已滿，無法收成。";
         return;
@@ -1369,7 +2219,11 @@ function WorldRuntime({
       chunk.dirty = true;
       publishChunks();
       emitQuestEvent({ type: "harvest", key: "crop", amount: 1 });
-      questMessage.current = "收成日穗與新種子。";
+      emitQuestEvent({ type: "harvest", key: crop.cropId, amount: 1 });
+      questMessage.current =
+        crop.cropId === "sungrain"
+          ? "收成日穗與新種子。"
+          : "收成生日根與新種子。";
       beep(590);
       return;
     }
@@ -1395,7 +2249,7 @@ function WorldRuntime({
         spawnPoint: safeSpawn,
         quest: quest.current,
         lastPlayedAt: now,
-        revision: initialPlayer.revision,
+        revision: playerServerRevision.current,
       };
       await putLocalPlayer(state);
       for (const chunk of dirty) {
@@ -1408,7 +2262,7 @@ function WorldRuntime({
           modifiedBlocks: Array.from(chunk.modifications),
           entities: chunk.entities,
           updatedAt: now,
-          revision: 0,
+          revision: chunk.serverRevision,
         };
         await putLocalChunk(delta);
       }
@@ -1431,6 +2285,8 @@ function WorldRuntime({
                 modifiedBlocks: Array.from(chunk.modifications),
                 chunkVersion: 1,
                 entities: chunk.entities,
+                expectedRevision:
+                  chunk.serverRevision > 0 ? chunk.serverRevision : undefined,
               }),
             },
           ),
@@ -1439,18 +2295,53 @@ function WorldRuntime({
           fetch(`/api/worlds/${world.id}/save`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify(state),
+            body: JSON.stringify({
+              ...state,
+              expectedRevision:
+                playerServerRevision.current > 0
+                  ? playerServerRevision.current
+                  : undefined,
+            }),
           }),
         );
         const results = await Promise.all(requests);
         const synced = results.every((result) => result.ok);
-        if (synced) dirty.forEach((chunk) => (chunk.dirty = false));
+        if (synced) {
+          for (let index = 0; index < dirty.length; index += 1) {
+            const payload = (await results[index]!.json()) as {
+              chunk?: { revision?: number };
+            };
+            dirty[index]!.serverRevision =
+              payload.chunk?.revision ?? dirty[index]!.serverRevision;
+            dirty[index]!.dirty = false;
+            await putLocalChunk({
+              worldId: world.id,
+              chunkX: dirty[index]!.data.x,
+              chunkZ: dirty[index]!.data.z,
+              generationVersion: GENERATION_VERSION,
+              chunkVersion: 1,
+              modifiedBlocks: Array.from(dirty[index]!.modifications),
+              entities: dirty[index]!.entities,
+              updatedAt: now,
+              revision: dirty[index]!.serverRevision,
+            });
+          }
+          const playerPayload = (await results.at(-1)!.json()) as {
+            state?: { revision?: number };
+          };
+          playerServerRevision.current =
+            playerPayload.state?.revision ?? playerServerRevision.current;
+          await putLocalPlayer({
+            ...state,
+            revision: playerServerRevision.current,
+          });
+        }
         onSaveStatus(synced ? "saved" : "failed");
       } else onSaveStatus("offline");
     } catch {
       onSaveStatus("failed");
     }
-  }, [initialPlayer.revision, onSaveStatus, safeSpawn, world]);
+  }, [onSaveStatus, safeSpawn, world]);
 
   useEffect(() => {
     registerSave(save);
@@ -1502,7 +2393,14 @@ function WorldRuntime({
         ),
       );
     };
-    const onMouseDown = (event: MouseEvent) => changeBlock(event.button);
+    const onMouseDown = (event: MouseEvent) => {
+      mouseButtons.current.add(event.button);
+      if (event.button !== 0) changeBlock(event.button);
+    };
+    const onMouseUp = (event: MouseEvent) => {
+      mouseButtons.current.delete(event.button);
+      if (event.button === 0) miningProgress.current = null;
+    };
     const onCraft = (event: Event) => {
       const recipe = GAME_RECIPES.find(
         (entry) => entry.id === (event as CustomEvent<string>).detail,
@@ -1511,7 +2409,16 @@ function WorldRuntime({
       const result = craftInventory(inventory.current, recipe);
       if (result) {
         inventory.current = result;
-        emitQuestEvent({ type: "craft", key: recipe.id });
+        emitQuestEvent({
+          type: "craft",
+          key: recipe.id,
+          amount: recipe.output.count,
+        });
+        emitQuestEvent({
+          type: "collect",
+          key: getBlockDefinition(recipe.output.blockId).key,
+          amount: recipe.output.count,
+        });
         if (recipe.output.blockId === BlockId.TrailRation)
           emitQuestEvent({
             type: "collect",
@@ -1531,6 +2438,114 @@ function WorldRuntime({
       );
       beep(300);
     };
+    const findStation = (id: string) => {
+      for (const chunk of chunks.current.values()) {
+        const entity = chunk.entities.find(
+          (entry): entry is InteractiveEntity =>
+            (entry.kind === "container" || entry.kind === "processor") &&
+            entry.id === id,
+        );
+        if (entity) return { chunk, entity };
+      }
+      return null;
+    };
+    const publishStation = (station: InteractiveEntity) => {
+      publishChunks();
+      window.dispatchEvent(
+        new CustomEvent("fangyu-station-update", {
+          detail: structuredClone(station),
+        }),
+      );
+    };
+    const onContainerTransfer = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          id: string;
+          direction: "to-container" | "to-player";
+          slot: number;
+        }>
+      ).detail;
+      const found = findStation(detail.id);
+      if (!found) return;
+      const stationInventory =
+        found.entity.kind === "container"
+          ? found.entity.inventory
+          : found.entity.output;
+      const result =
+        detail.direction === "to-container"
+          ? transferInventoryStack(
+              inventory.current,
+              stationInventory,
+              detail.slot,
+            )
+          : transferInventoryStack(
+              stationInventory,
+              inventory.current,
+              detail.slot,
+            );
+      if (result.moved === 0) return;
+      if (detail.direction === "to-container") {
+        inventory.current = result.source;
+        if (found.entity.kind === "container")
+          found.entity.inventory = result.destination;
+        else found.entity.output = result.destination;
+      } else {
+        inventory.current = result.destination;
+        if (found.entity.kind === "container")
+          found.entity.inventory = result.source;
+        else found.entity.output = result.source;
+      }
+      found.entity.revision += 1;
+      found.chunk.dirty = true;
+      publishStation(found.entity);
+      beep(330);
+    };
+    const onProcessorStart = (event: Event) => {
+      const { id, recipeId } = (
+        event as CustomEvent<{ id: string; recipeId: string }>
+      ).detail;
+      const found = findStation(id);
+      if (!found || found.entity.kind !== "processor") return;
+      const started = startProcessor(found.entity, inventory.current, recipeId);
+      if (!started) {
+        questMessage.current = "材料或脈熱燃芯不足，無法開始加工。";
+        beep(95);
+        return;
+      }
+      inventory.current = started.inventory;
+      Object.assign(found.entity, started.processor);
+      found.chunk.dirty = true;
+      publishStation(found.entity);
+      beep(390);
+    };
+    const onProcessorCollect = (event: Event) => {
+      const { id } = (event as CustomEvent<{ id: string }>).detail;
+      const found = findStation(id);
+      if (!found || found.entity.kind !== "processor") return;
+      const ready = finishProcessor(found.entity);
+      const outputItem = ready.output.find(Boolean);
+      const collected = collectProcessorOutput(ready, inventory.current);
+      if (collected.moved === 0) {
+        questMessage.current = "加工尚未完成，或背包沒有空間。";
+        return;
+      }
+      inventory.current = collected.inventory;
+      Object.assign(found.entity, collected.processor);
+      found.chunk.dirty = true;
+      emitQuestEvent({
+        type: "craft",
+        key: "refined-material",
+        amount: collected.moved,
+      });
+      if (outputItem)
+        emitQuestEvent({
+          type: "collect",
+          key: getBlockDefinition(outputItem.blockId).key,
+          amount: collected.moved,
+        });
+      publishStation(found.entity);
+      beep(540);
+    };
     const onTutorial = (event: Event) => {
       const action = (event as CustomEvent<"skip" | "complete">).detail;
       quest.current = {
@@ -1547,25 +2562,100 @@ function WorldRuntime({
       hunger.current = 20;
       dead.current = false;
     };
+    const onFastTravel = (event: Event) => {
+      const nodeId = (event as CustomEvent<{ nodeId: string }>).detail.nodeId;
+      const node = nexusNodes.find((entry) => entry.id === nodeId);
+      if (!node || !quest.current.repairedNodeIds.includes(nodeId)) {
+        questMessage.current = "該節點尚未修復，無法建立安全通道。";
+        return;
+      }
+      const paid = consumeInventoryItem(
+        inventory.current,
+        BlockId.WaygateFuel,
+        1,
+      );
+      if (!paid) {
+        questMessage.current = "快速旅行需要 1 枚遠行燃料。";
+        return;
+      }
+      inventory.current = paid;
+      position.current.set(...node.position);
+      velocity.current.set(0, 0, 0);
+      quest.current = {
+        ...quest.current,
+        activatedNodeIds: Array.from(
+          new Set([...quest.current.activatedNodeIds, nodeId]),
+        ),
+      };
+      emitQuestEvent({ type: "activateNexus", key: "waygate" });
+      questMessage.current = `通道穩定：已抵達 ${node.name}。`;
+      beep(700);
+      void save();
+    };
+    const onE2eMine = (event: Event) => {
+      if (!new URLSearchParams(window.location.search).has("e2e")) return;
+      const item = (event as CustomEvent<{ crystal: "sun" | "dusk" }>).detail
+        .crystal;
+      const x = Math.floor(position.current.x) + 2,
+        z = Math.floor(position.current.z),
+        y = Math.floor(position.current.y + 0.2),
+        coordinate = worldToChunk(x, z),
+        local = worldToLocal(x, z),
+        chunk = chunks.current.get(chunkKey(coordinate.x, coordinate.z));
+      if (!chunk) return;
+      const blockId =
+        item === "sun" ? BlockId.SunShardOre : BlockId.DuskShardOre;
+      setChunkBlock(chunk.data, local.x, y, local.z, blockId);
+      chunk.modifications.set(voxelIndex(local.x, y, local.z), blockId);
+      changeBlock(
+        0,
+        {
+          block: { x, y, z },
+          previous: { x: x - 1, y, z },
+          blockId,
+          distance: 2,
+        },
+        true,
+      );
+      position.current.set(x + 0.5, y, z + 0.5);
+    };
     document.addEventListener("pointerlockchange", onLock);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("mouseup", onMouseUp);
     window.addEventListener("fangyu-craft", onCraft);
     window.addEventListener("fangyu-inventory-move", onInventoryMove);
+    window.addEventListener("fangyu-container-transfer", onContainerTransfer);
+    window.addEventListener("fangyu-processor-start", onProcessorStart);
+    window.addEventListener("fangyu-processor-collect", onProcessorCollect);
     window.addEventListener("fangyu-tutorial", onTutorial);
     window.addEventListener("fangyu-respawn", onRespawn);
+    window.addEventListener("fangyu-fast-travel", onFastTravel);
+    window.addEventListener("fangyu-e2e-mine", onE2eMine);
     return () => {
       document.removeEventListener("pointerlockchange", onLock);
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("keyup", onKeyUp);
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("fangyu-craft", onCraft);
       window.removeEventListener("fangyu-inventory-move", onInventoryMove);
+      window.removeEventListener(
+        "fangyu-container-transfer",
+        onContainerTransfer,
+      );
+      window.removeEventListener("fangyu-processor-start", onProcessorStart);
+      window.removeEventListener(
+        "fangyu-processor-collect",
+        onProcessorCollect,
+      );
       window.removeEventListener("fangyu-tutorial", onTutorial);
       window.removeEventListener("fangyu-respawn", onRespawn);
+      window.removeEventListener("fangyu-fast-travel", onFastTravel);
+      window.removeEventListener("fangyu-e2e-mine", onE2eMine);
     };
   }, [
     beep,
@@ -1578,6 +2668,7 @@ function WorldRuntime({
     repairNearestNode,
     harvestNearestCrop,
     emitQuestEvent,
+    nexusNodes,
     save,
   ]);
 
@@ -1595,6 +2686,26 @@ function WorldRuntime({
 
   useFrame((state, rawDelta) => {
     const delta = Math.min(rawDelta, 0.1);
+    if (
+      !paused &&
+      document.pointerLockElement === gl.domElement &&
+      mouseButtons.current.has(0) &&
+      hit.current
+    ) {
+      const currentHit = hit.current;
+      const key = `${currentHit.block.x}:${currentHit.block.y}:${currentHit.block.z}`;
+      if (!miningProgress.current || miningProgress.current.key !== key)
+        miningProgress.current = { key, seconds: 0 };
+      miningProgress.current.seconds += delta;
+      const required = miningSeconds(
+        currentHit.blockId,
+        inventory.current[selected.current] ?? null,
+      );
+      if (miningProgress.current.seconds >= required) {
+        miningProgress.current = null;
+        changeBlock(0);
+      }
+    } else if (!mouseButtons.current.has(0)) miningProgress.current = null;
     fpsFrames.current += 1;
     fpsTime.current += delta;
     if (fpsTime.current >= 0.5) {
@@ -1911,7 +3022,7 @@ function WorldRuntime({
       const chunk = chunks.current.get(chunkKey(coordinate.x, coordinate.z));
       if (!chunk) return false;
       chunk.entities.push({
-        id: crypto.randomUUID(),
+        id: createRuntimeId(),
         kind: "dropped-item",
         itemId,
         count: 1,
@@ -1926,7 +3037,58 @@ function WorldRuntime({
   );
 
   const obtainAnimalProduct = useCallback(
-    (species: "cow" | "sheep") => {
+    (creatureId: string, species: "cow" | "sheep" | "pig") => {
+      let saved: { chunk: LoadedChunk; entity: CreatureEntity } | null = null;
+      for (const chunk of chunks.current.values()) {
+        const entity = chunk.entities.find(
+          (entry): entry is CreatureEntity =>
+            entry.kind === "creature" && entry.id === creatureId,
+        );
+        if (entity) {
+          saved = { chunk, entity };
+          break;
+        }
+      }
+      if (!saved) return false;
+      if (species === "pig") {
+        const fed = consumeInventoryItem(
+          inventory.current,
+          BlockId.FieldSeed,
+          1,
+        );
+        if (!fed) {
+          questMessage.current = "星紋豬喜歡日穗種子。";
+          return false;
+        }
+        inventory.current = fed;
+        saved.entity.health = Math.min(
+          saved.entity.maxHealth ?? 10,
+          saved.entity.health + 2,
+        );
+        saved.entity.lastProductAt = new Date().toISOString();
+        saved.chunk.dirty = true;
+        emitQuestEvent({ type: "animalProduct", key: "pig-care" });
+        questMessage.current = "星紋豬已進食並恢復生命。";
+        beep(460);
+        return true;
+      }
+      const cooldown = species === "cow" ? 45_000 : 120_000;
+      if (
+        saved.entity.lastProductAt &&
+        Date.now() - Date.parse(saved.entity.lastProductAt) < cooldown
+      ) {
+        questMessage.current = "這隻動物需要休息一段時間。";
+        return false;
+      }
+      if (
+        species === "sheep" &&
+        saved.entity.woolly === false &&
+        (!saved.entity.woolRegrowsAt ||
+          Date.parse(saved.entity.woolRegrowsAt) > Date.now())
+      ) {
+        questMessage.current = "雲絨仍在重新生長。";
+        return false;
+      }
       if (species === "cow") {
         const withoutFlask = consumeInventoryItem(
           inventory.current,
@@ -1944,6 +3106,8 @@ function WorldRuntime({
         );
         if (filled.remaining > 0) return false;
         inventory.current = filled.inventory;
+        saved.entity.lastProductAt = new Date().toISOString();
+        saved.chunk.dirty = true;
         emitQuestEvent({ type: "animalProduct", key: "milk" });
         emitQuestEvent({ type: "collect", key: "food" });
         questMessage.current = "取得牧野乳。";
@@ -1961,6 +3125,15 @@ function WorldRuntime({
       );
       if (wool.remaining > 0) return false;
       inventory.current = wool.inventory;
+      saved.entity.lastProductAt = new Date().toISOString();
+      saved.entity.woolly = false;
+      saved.entity.woolRegrowsAt = new Date(Date.now() + 120_000).toISOString();
+      saved.chunk.dirty = true;
+      const shearsSlot = inventory.current.findIndex(
+        (stack) => stack?.blockId === BlockId.FiberShears,
+      );
+      if (shearsSlot >= 0)
+        inventory.current = damageTool(inventory.current, shearsSlot);
       emitQuestEvent({ type: "animalProduct", key: "wool" });
       questMessage.current = "取得雲絨；牠會隨時間重新長出毛層。";
       beep(480);
@@ -1970,9 +3143,83 @@ function WorldRuntime({
   );
 
   const interactNpc = useCallback(
-    (role: string, name: string) => {
-      emitQuestEvent({ type: "interactNPC", key: role });
-      if (role === "trader") {
+    (id: string, profession: NpcEntity["profession"], name: string) => {
+      quest.current = acceptSideQuest(quest.current, profession);
+      const pendingQuest = SIDE_QUESTS.find(
+        (entry) =>
+          entry.profession === profession &&
+          quest.current.pendingSideQuestRewards.includes(entry.id) &&
+          !quest.current.claimedSideQuestRewards.includes(entry.id),
+      );
+      if (
+        pendingQuest?.reward.itemId !== undefined &&
+        pendingQuest.reward.count
+      ) {
+        const granted = addToInventoryWithRemainder(
+          inventory.current,
+          pendingQuest.reward.itemId,
+          pendingQuest.reward.count,
+        );
+        if (granted.remaining === 0) {
+          inventory.current = granted.inventory;
+          quest.current = {
+            ...quest.current,
+            claimedSideQuestRewards: Array.from(
+              new Set([
+                ...quest.current.claimedSideQuestRewards,
+                pendingQuest.id,
+              ]),
+            ),
+            pendingSideQuestRewards:
+              quest.current.pendingSideQuestRewards.filter(
+                (entry) => entry !== pendingQuest.id,
+              ),
+          };
+          questMessage.current = `${name}：已補領 ${pendingQuest.reward.label}。`;
+          beep(690);
+          return;
+        }
+      }
+      for (const chunk of chunks.current.values()) {
+        const npc = chunk.entities.find(
+          (entity): entity is NpcEntity =>
+            entity.kind === "npc" && entity.id === id,
+        );
+        if (!npc) continue;
+        npc.tradeCount += 1;
+        npc.interactionFlags = Array.from(
+          new Set([...npc.interactionFlags, "met-player"]),
+        );
+        npc.questStep = Math.max(npc.questStep, 1);
+        chunk.dirty = true;
+        break;
+      }
+      emitQuestEvent({ type: "interactNPC", key: profession });
+      if (profession === "trader") {
+        const withoutParts = consumeInventoryItem(
+          inventory.current,
+          BlockId.SettlerComponent,
+          3,
+        );
+        const alliancePaid = withoutParts
+          ? consumeInventoryItem(withoutParts, BlockId.FrequencyCore, 1)
+          : null;
+        if (alliancePaid) {
+          const seal = addToInventoryWithRemainder(
+            alliancePaid,
+            BlockId.AllianceSeal,
+            1,
+          );
+          if (seal.remaining === 0) {
+            inventory.current = seal.inventory;
+            emitQuestEvent({ type: "trade", key: "alliance-seal" });
+            emitQuestEvent({ type: "trade", key: "trader" });
+            emitQuestEvent({ type: "collect", key: "alliance-seal" });
+            questMessage.current = `${name}：各聚落已共同簽發聯盟印記。`;
+            beep(680);
+            return;
+          }
+        }
         const paid = consumeInventoryItem(inventory.current, BlockId.Dune, 2);
         if (paid) {
           const received = addToInventoryWithRemainder(
@@ -1983,6 +3230,7 @@ function WorldRuntime({
           if (received.remaining === 0) {
             inventory.current = received.inventory;
             emitQuestEvent({ type: "trade", key: "field-seed" });
+            emitQuestEvent({ type: "trade", key: "trader" });
             questMessage.current = `${name}：交易完成，2 星砂換得 2 日穗種子。`;
             beep(610);
             return;
@@ -1991,7 +3239,110 @@ function WorldRuntime({
         questMessage.current = `${name}：準備 2 星砂並保留背包空間，我能交換日穗種子。`;
         return;
       }
-      questMessage.current = `${name}（${role}）：聚落今天也在運作。`;
+      if (profession === "crafter") {
+        const withoutPart = consumeInventoryItem(
+          inventory.current,
+          BlockId.OldComponent,
+          1,
+        );
+        const paid = withoutPart
+          ? consumeInventoryItem(withoutPart, BlockId.CopperBloom, 1)
+          : null;
+        if (paid) {
+          const received = addToInventoryWithRemainder(
+            paid,
+            BlockId.SettlerComponent,
+            1,
+          );
+          if (received.remaining === 0) {
+            inventory.current = received.inventory;
+            emitQuestEvent({ type: "trade", key: "settler-component" });
+            emitQuestEvent({ type: "trade", key: "crafter" });
+            emitQuestEvent({ type: "collect", key: "settler-component" });
+            questMessage.current = `${name}：遺留零件已重製成工匠元件。`;
+            beep(590);
+            return;
+          }
+        }
+        questMessage.current = `${name}：帶來 1 遺留零件與 1 銅花礦，我可以重製它。`;
+        return;
+      }
+      if (profession === "explorer") {
+        const paid = consumeInventoryItem(
+          inventory.current,
+          BlockId.ResonantPlant,
+          2,
+        );
+        if (paid) {
+          const received = addToInventoryWithRemainder(
+            paid,
+            BlockId.WaygateFuel,
+            1,
+          );
+          if (received.remaining === 0) {
+            inventory.current = received.inventory;
+            emitQuestEvent({ type: "trade", key: "waygate-fuel" });
+            emitQuestEvent({ type: "trade", key: "explorer" });
+            emitQuestEvent({ type: "collect", key: "waygate-fuel" });
+            questMessage.current = `${name}：共鳴植物已換成一枚遠行燃料。`;
+            beep(620);
+            return;
+          }
+        }
+        questMessage.current = `${name}：2 株共鳴植物可以交換 1 枚遠行燃料。`;
+        return;
+      }
+      if (profession === "farmer") {
+        const paid = consumeInventoryItem(
+          inventory.current,
+          BlockId.Sungrain,
+          2,
+        );
+        if (paid) {
+          const received = addToInventoryWithRemainder(
+            paid,
+            BlockId.RootSeed,
+            2,
+          );
+          if (received.remaining === 0) {
+            inventory.current = received.inventory;
+            emitQuestEvent({ type: "trade", key: "farmer" });
+            questMessage.current = `${name}：日穗已交換成 2 枚日根種子。`;
+            beep(580);
+            return;
+          }
+        }
+        questMessage.current = `${name}：2 份日穗可以交換 2 枚日根種子。`;
+        return;
+      }
+      if (profession === "researcher") {
+        const withoutSun = consumeInventoryItem(
+          inventory.current,
+          BlockId.SunShard,
+          1,
+        );
+        const paid = withoutSun
+          ? consumeInventoryItem(withoutSun, BlockId.DuskShard, 1)
+          : null;
+        if (paid) {
+          const received = addToInventoryWithRemainder(
+            paid,
+            BlockId.RefinedAlloy,
+            1,
+          );
+          if (received.remaining === 0) {
+            inventory.current = received.inventory;
+            emitQuestEvent({ type: "trade", key: "researcher" });
+            emitQuestEvent({ type: "collect", key: "refined-material" });
+            questMessage.current = `${name}：雙相晶樣已穩定成穩相合金。`;
+            beep(650);
+            return;
+          }
+        }
+        questMessage.current = `${name}：日耀晶與暮影晶各 1 枚可交換穩相合金。`;
+        return;
+      }
+      questMessage.current = `${name}（${profession}）：支線任務已記入 Journal。`;
       beep(410);
     },
     [beep, emitQuestEvent],
@@ -2006,6 +3357,7 @@ function WorldRuntime({
       ))}
       <DroppedItemField drops={renderDrops} />
       <CropField crops={renderCrops} />
+      <DoorField doors={renderDoors} />
       <SelectionOutline hit={hit.current} />
       <NexusNodeField
         nodes={nexusNodes}
@@ -2013,22 +3365,66 @@ function WorldRuntime({
       />
       <CreatureField
         seed={world.seed}
+        lookup={lookup}
+        persistedCreatures={renderCreatures}
         player={position}
         paused={paused}
         onDrop={spawnWorldDrop}
         onProduct={obtainAnimalProduct}
+        onPersist={(id, nextPosition, nextHealth, alive) => {
+          for (const chunk of chunks.current.values()) {
+            const entity = chunk.entities.find(
+              (entry): entry is CreatureEntity =>
+                entry.kind === "creature" && entry.id === id,
+            );
+            if (!entity) continue;
+            if (!alive)
+              chunk.entities = chunk.entities.filter(
+                (entry) => entry.id !== id,
+              );
+            else {
+              entity.position = nextPosition;
+              entity.health = nextHealth;
+              entity.state = "wander";
+              if (
+                entity.species === "sheep" &&
+                entity.woolly === false &&
+                entity.woolRegrowsAt &&
+                Date.parse(entity.woolRegrowsAt) <= Date.now()
+              ) {
+                entity.woolly = true;
+                delete entity.woolRegrowsAt;
+              }
+            }
+            chunk.dirty = true;
+            break;
+          }
+        }}
         damage={(amount) => {
           if (world.gameMode === "survival")
             health.current = Math.max(0, health.current - amount);
         }}
       />
       <NpcVillageField
-        village={landmarks.find((landmark) => landmark.type === "village")!}
+        npcs={renderNpcs}
         seed={world.seed}
         player={position}
         paused={paused}
         timeOfDay={timeOfDay}
         onInteract={interactNpc}
+        onPersist={(id, nextPosition, scheduleState) => {
+          for (const chunk of chunks.current.values()) {
+            const npc = chunk.entities.find(
+              (entity): entity is NpcEntity =>
+                entity.kind === "npc" && entity.id === id,
+            );
+            if (!npc) continue;
+            npc.position = nextPosition;
+            npc.scheduleState = scheduleState;
+            chunk.dirty = true;
+            break;
+          }
+        }}
       />
       <AtmosphereField
         seed={world.seed}
@@ -2041,54 +3437,82 @@ function WorldRuntime({
 
 function CreatureField({
   seed,
+  lookup,
+  persistedCreatures,
   player,
   paused,
   onDrop,
   onProduct,
+  onPersist,
   damage,
 }: {
   seed: string;
+  lookup: WorldBlockLookup;
+  persistedCreatures: readonly RenderCreature[];
   player: RefObject<THREE.Vector3>;
   paused: boolean;
   onDrop: (
     itemId: BlockIdValue,
     position: readonly [number, number, number],
   ) => boolean;
-  onProduct: (species: "cow" | "sheep") => boolean;
+  onProduct: (id: string, species: "cow" | "sheep" | "pig") => boolean;
+  onPersist: (
+    id: string,
+    position: readonly [number, number, number],
+    health: number,
+    alive: boolean,
+  ) => void;
   damage: (amount: number) => void;
 }) {
   const { camera } = useThree();
   const [, redraw] = useState(0);
+  const persistClock = useRef(0);
   const creatures = useMemo(() => {
     const ocean = findBiomeSpot(seed, "ocean");
+    const colors: Record<string, string> = {
+      chicken: "#e6bd57",
+      cow: "#9b6a43",
+      pig: "#d98586",
+      sheep: "#d9e4df",
+      rabbit: "#b89b79",
+      fish: "#48a9c9",
+      riftling: "#7d4ab2",
+    };
     const entries = [
-      ["chicken", 7, 6, 6, "#e6bd57"],
-      ["cow", 11, 4, 12, "#9b6a43"],
-      ["pig", -8, 7, 10, "#d98586"],
-      ["sheep", -11, -5, 8, "#d9e4df"],
-      ["rabbit", 4, -10, 5, "#b89b79"],
-      ["fish", ocean[0], ocean[1], 4, "#48a9c9"],
-      ["riftling", -7, -8, 9, "#7d4ab2"],
-    ] as const;
-    return entries.map(([species, x, z, health, color], index) => ({
-      id: `${species}-${index}`,
-      species,
-      color,
-      health,
+      ...persistedCreatures.map((entity) => ({
+        id: entity.id,
+        species: entity.species,
+        health: entity.health,
+        position: entity.position,
+        persistent: true,
+      })),
+      {
+        id: "transient-fish",
+        species: "fish",
+        health: 4,
+        position: [ocean[0], SEA_LEVEL - 1.2, ocean[1]] as const,
+        persistent: false,
+      },
+      {
+        id: "transient-riftling",
+        species: "riftling",
+        health: 9,
+        position: [-7, terrainHeight(seed, -7, -8) + 0.7, -8] as const,
+        persistent: false,
+      },
+    ];
+    return entries.map((entry, index) => ({
+      ...entry,
+      color: colors[entry.species] ?? "#cccccc",
       alive: true,
       mesh: null as THREE.Group | null,
-      position: new THREE.Vector3(
-        x,
-        species === "fish" ? SEA_LEVEL - 1.2 : terrainHeight(seed, x, z) + 0.55,
-        z,
-      ),
+      position: new THREE.Vector3(...entry.position),
       heading: index * 0.83,
       think: 1.4 + index * 0.6,
-      productReadyAt: 0,
-      eggClock: species === "chicken" ? 70 : Infinity,
+      eggClock: entry.species === "chicken" ? 70 : Infinity,
       attackClock: 0,
     }));
-  }, [seed]);
+  }, [persistedCreatures, seed]);
 
   useEffect(() => {
     const attack = () => {
@@ -2112,6 +3536,13 @@ function CreatureField({
             ? BlockId.CloudWool
             : BlockId.TrailRation;
       onDrop(drop, [target.position.x, target.position.y, target.position.z]);
+      if (target.persistent)
+        onPersist(
+          target.id,
+          [target.position.x, target.position.y, target.position.z],
+          0,
+          false,
+        );
       redraw((value) => value + 1);
     };
     const interact = () => {
@@ -2119,7 +3550,9 @@ function CreatureField({
         .filter(
           (creature) =>
             creature.alive &&
-            (creature.species === "cow" || creature.species === "sheep"),
+            (creature.species === "cow" ||
+              creature.species === "sheep" ||
+              creature.species === "pig"),
         )
         .map((creature) => ({
           creature,
@@ -2127,11 +3560,8 @@ function CreatureField({
         }))
         .sort((a, b) => a.distance - b.distance)[0];
       if (!nearest || nearest.distance > 3.2) return;
-      const species = nearest.creature.species as "cow" | "sheep";
-      if (performance.now() < nearest.creature.productReadyAt) return;
-      if (onProduct(species))
-        nearest.creature.productReadyAt =
-          performance.now() + (species === "cow" ? 45_000 : 120_000);
+      const species = nearest.creature.species as "cow" | "sheep" | "pig";
+      onProduct(nearest.creature.id, species);
     };
     window.addEventListener("fangyu-attack", attack);
     window.addEventListener("fangyu-creature-interact", interact);
@@ -2139,9 +3569,10 @@ function CreatureField({
       window.removeEventListener("fangyu-attack", attack);
       window.removeEventListener("fangyu-creature-interact", interact);
     };
-  }, [camera, creatures, onDrop, onProduct, player]);
+  }, [camera, creatures, onDrop, onPersist, onProduct, player]);
   useFrame((_, delta) => {
     if (paused) return;
+    persistClock.current += delta;
     for (const creature of creatures) {
       if (!creature.alive || !creature.mesh) continue;
       const distanceToPlayer = creature.position.distanceTo(player.current);
@@ -2152,8 +3583,17 @@ function CreatureField({
       creature.mesh.visible = true;
       if (creature.species === "fish") {
         creature.heading += delta * 0.12;
-        creature.position.x += Math.sin(creature.heading) * delta * 0.55;
-        creature.position.z += Math.cos(creature.heading) * delta * 0.55;
+        const nextX =
+            creature.position.x + Math.sin(creature.heading) * delta * 0.55,
+          nextZ =
+            creature.position.z + Math.cos(creature.heading) * delta * 0.55;
+        if (
+          lookup(Math.floor(nextX), SEA_LEVEL - 1, Math.floor(nextZ)) ===
+          BlockId.Water
+        ) {
+          creature.position.x = nextX;
+          creature.position.z = nextZ;
+        } else creature.heading += Math.PI * 0.65;
         creature.position.y =
           SEA_LEVEL - 1.5 + Math.sin(performance.now() / 900) * 0.35;
       } else if (creature.species === "riftling") {
@@ -2189,8 +3629,22 @@ function CreatureField({
             : distanceToPlayer < 3.2
               ? 1.2
               : 0.42;
-        creature.position.x += Math.sin(creature.heading) * delta * speed;
-        creature.position.z += Math.cos(creature.heading) * delta * speed;
+        const nextX =
+            creature.position.x + Math.sin(creature.heading) * delta * speed,
+          nextZ =
+            creature.position.z + Math.cos(creature.heading) * delta * speed,
+          blocked = getBlockDefinition(
+            lookup(
+              Math.floor(nextX),
+              Math.floor(creature.position.y + 0.7),
+              Math.floor(nextZ),
+            ),
+          ).solid;
+        if (blocked) creature.heading += Math.PI * (0.45 + delta);
+        else {
+          creature.position.x = nextX;
+          creature.position.z = nextZ;
+        }
         creature.position.y =
           terrainHeight(seed, creature.position.x, creature.position.z) +
           (creature.species === "rabbit" ? 0.32 : 0.55);
@@ -2213,6 +3667,17 @@ function CreatureField({
       }
       creature.mesh.position.copy(creature.position);
       creature.mesh.rotation.y = creature.heading;
+    }
+    if (persistClock.current >= 5) {
+      persistClock.current = 0;
+      for (const creature of creatures)
+        if (creature.persistent)
+          onPersist(
+            creature.id,
+            [creature.position.x, creature.position.y, creature.position.z],
+            creature.health,
+            creature.alive,
+          );
     }
   });
   return (
@@ -2287,51 +3752,55 @@ function findBiomeSpot(
 }
 
 function NpcVillageField({
-  village,
+  npcs,
   seed,
   player,
   paused,
   timeOfDay,
   onInteract,
+  onPersist,
 }: {
-  village: WorldLandmark;
+  npcs: readonly RenderNpc[];
   seed: string;
   player: RefObject<THREE.Vector3>;
   paused: boolean;
   timeOfDay: RefObject<number>;
-  onInteract: (role: string, name: string) => void;
+  onInteract: (
+    id: string,
+    profession: NpcEntity["profession"],
+    name: string,
+  ) => void;
+  onPersist: (
+    id: string,
+    position: readonly [number, number, number],
+    scheduleState: NpcEntity["scheduleState"],
+  ) => void;
 }) {
   const villagers = useMemo(() => {
-    const definitions = [
-      ["Mira", "farmer", -10, -9, -2, 9, "#71ad56"],
-      ["Tor", "crafter", 10, -8, 3, -2, "#c77b4e"],
-      ["Sela", "trader", -9, 10, 0, 0, "#d5b64d"],
-      ["Ivo", "explorer", 11, 9, 7, 3, "#4e9fc7"],
-      ["Nara", "nexus-researcher", 11, 9, -5, -3, "#a46dcc"],
-    ] as const;
-    return definitions.map(([name, role, hx, hz, wx, wz, color], index) => {
-      const home = new THREE.Vector3(
-        village.x + hx,
-        terrainHeight(seed, village.x + hx, village.z + hz) + 1,
-        village.z + hz,
-      );
-      const work = new THREE.Vector3(
-        village.x + wx,
-        terrainHeight(seed, village.x + wx, village.z + wz) + 1,
-        village.z + wz,
-      );
+    const colors: Record<NpcEntity["profession"], string> = {
+      farmer: "#71ad56",
+      crafter: "#c77b4e",
+      trader: "#d5b64d",
+      explorer: "#4e9fc7",
+      researcher: "#a46dcc",
+    };
+    return npcs.map((npc) => {
+      const home = new THREE.Vector3(...npc.home);
+      const work = new THREE.Vector3(...npc.work);
       return {
-        id: `settler-${index}`,
-        name,
-        role,
-        color,
+        id: npc.id,
+        name: npc.name,
+        role: npc.profession,
+        color: colors[npc.profession],
         home,
         work,
-        position: home.clone(),
+        position: new THREE.Vector3(...npc.position),
+        scheduleState: npc.scheduleState,
         mesh: null as THREE.Group | null,
       };
     });
-  }, [seed, village.x, village.z]);
+  }, [npcs]);
+  const persistClock = useRef(0);
 
   useEffect(() => {
     const interact = () => {
@@ -2342,7 +3811,11 @@ function NpcVillageField({
         }))
         .sort((a, b) => a.distance - b.distance)[0];
       if (nearest && nearest.distance <= 3.2)
-        onInteract(nearest.villager.role, nearest.villager.name);
+        onInteract(
+          nearest.villager.id,
+          nearest.villager.role,
+          nearest.villager.name,
+        );
     };
     window.addEventListener("fangyu-creature-interact", interact);
     return () =>
@@ -2351,6 +3824,7 @@ function NpcVillageField({
 
   useFrame((_, delta) => {
     if (paused) return;
+    persistClock.current += delta;
     const day = timeOfDay.current >= 0.18 && timeOfDay.current <= 0.72;
     for (const [index, villager] of villagers.entries()) {
       if (!villager.mesh) continue;
@@ -2358,6 +3832,7 @@ function NpcVillageField({
       villager.mesh.visible = distance < 72;
       if (distance >= 72) continue;
       const target = day ? villager.work : villager.home;
+      villager.scheduleState = day ? "working" : "home";
       const sway = new THREE.Vector3(
         Math.sin(performance.now() / 2400 + index) * 1.6,
         0,
@@ -2373,6 +3848,15 @@ function NpcVillageField({
         villager.mesh.rotation.y = Math.atan2(direction.x, direction.z);
       }
       villager.mesh.position.copy(villager.position);
+    }
+    if (persistClock.current >= 5) {
+      persistClock.current = 0;
+      for (const villager of villagers)
+        onPersist(
+          villager.id,
+          [villager.position.x, villager.position.y, villager.position.z],
+          villager.scheduleState,
+        );
     }
   });
 
