@@ -5,6 +5,7 @@ import {
   addToInventory,
   addToInventoryWithRemainder,
   buildChunkMesh,
+  nextSwimmingVelocityY,
   WATER_RENDER_STATE,
   canPlaceBlock,
   canCultivateSurface,
@@ -197,6 +198,16 @@ describe("voxel world", () => {
         x === 4 && y === 10 && z === 4 ? BlockId.Water : BlockId.Air,
       ),
     ).toBe(false);
+  });
+
+  it("gives an upward swim impulse strong enough to clear a shoreline", () => {
+    expect(
+      nextSwimmingVelocityY(0, true, false, 1 / 60),
+    ).toBeGreaterThanOrEqual(4.8);
+    expect(nextSwimmingVelocityY(2, false, true, 1 / 60)).toBeLessThanOrEqual(
+      -3.6,
+    );
+    expect(nextSwimmingVelocityY(0, false, false, 1 / 60)).toBeLessThan(0);
   });
 
   it("never creates internal water faces, including across a chunk boundary", () => {

@@ -8,6 +8,23 @@ export interface RaycastHit {
   distance: number;
 }
 
+/**
+ * Water has no solid collision, so swimming needs enough upward momentum to
+ * clear a one-block shoreline. The minimum impulse also prevents drag from
+ * pinning the player against a bank while Space is held.
+ */
+export function nextSwimmingVelocityY(
+  currentVelocity: number,
+  swimUp: boolean,
+  dive: boolean,
+  dt: number,
+): number {
+  const damped = currentVelocity * 0.88;
+  if (swimUp) return Math.max(4.8, damped + 8 * dt);
+  if (dive) return Math.min(-3.6, damped - 8 * dt);
+  return damped - 3.2 * dt;
+}
+
 export function raycastVoxels(
   lookup: WorldBlockLookup,
   origin: readonly [number, number, number],

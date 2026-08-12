@@ -48,6 +48,7 @@ import {
   transferInventoryStack,
   damageTool,
   miningSeconds,
+  nextSwimmingVelocityY,
   raycastVoxels,
   removeFromInventory,
   moveInventoryStack,
@@ -2831,18 +2832,18 @@ function WorldRuntime({
         velocity.current.x = ((-sin * forward + cos * strafe) / length) * speed;
         velocity.current.z = ((-cos * forward - sin * strafe) / length) * speed;
         if (inWater) {
-          velocity.current.y *= 0.82;
-          velocity.current.y +=
-            (Number(keys.current.has("Space")) -
-              Number(keys.current.has("ControlLeft"))) *
-            7.5 *
-            dt;
+          velocity.current.y = nextSwimmingVelocityY(
+            velocity.current.y,
+            keys.current.has("Space"),
+            keys.current.has("ControlLeft"),
+            dt,
+          );
         } else if (keys.current.has("Space") && grounded.current) {
           velocity.current.y = 8;
           grounded.current = false;
           beep(260);
         }
-        velocity.current.y -= (inWater ? 3.2 : 22) * dt;
+        if (!inWater) velocity.current.y -= 22 * dt;
         const eyeHeight = keys.current.has("ControlLeft") ? 1.35 : 1.62;
         const headUnderwater =
           lookup(
