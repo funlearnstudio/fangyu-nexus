@@ -161,6 +161,31 @@ export function addToInventory(
   return next;
 }
 
+/** Adds as much as fits. The remainder is deliberately returned so no loot is lost. */
+export function addToInventoryWithRemainder(
+  inventory: Inventory,
+  blockId: BlockIdValue,
+  count: number,
+  maxStack = 64,
+): { inventory: Inventory; remaining: number } {
+  const next = inventory.map((stack) => (stack ? { ...stack } : null));
+  let remaining = count;
+  for (const stack of next)
+    if (stack?.blockId === blockId && stack.count < maxStack) {
+      const added = Math.min(maxStack - stack.count, remaining);
+      stack.count += added;
+      remaining -= added;
+      if (remaining === 0) return { inventory: next, remaining };
+    }
+  for (let index = 0; index < next.length && remaining > 0; index += 1)
+    if (!next[index]) {
+      const added = Math.min(maxStack, remaining);
+      next[index] = { blockId, count: added };
+      remaining -= added;
+    }
+  return { inventory: next, remaining };
+}
+
 export function removeFromInventory(
   inventory: Inventory,
   slot: number,
