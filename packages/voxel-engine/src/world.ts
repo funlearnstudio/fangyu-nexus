@@ -193,11 +193,15 @@ export function generateChunk(
           else {
             const ore = random2(seed ^ Math.imul(y, 541), worldX, worldZ, 509);
             id =
-              ore > 0.986
-                ? BlockId.GlowCrystal
-                : ore > 0.955
-                  ? BlockId.CopperBloom
-                  : BlockId.Slate;
+              ore > 0.993
+                ? BlockId.DuskShardOre
+                : ore > 0.989
+                  ? BlockId.SunShardOre
+                  : ore > 0.986
+                    ? BlockId.GlowCrystal
+                    : ore > 0.955
+                      ? BlockId.CopperBloom
+                      : BlockId.Slate;
           }
         } else if (y <= seaLevel) id = BlockId.Water;
         blocks[voxelIndex(x, y, z)] = id;
