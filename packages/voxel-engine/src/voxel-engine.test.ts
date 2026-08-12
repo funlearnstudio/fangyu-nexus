@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { Inventory } from "./gameplay";
 import {
   BlockId,
   addToInventory,
+  addToInventoryWithRemainder,
   buildChunkMesh,
   canPlaceBlock,
   chunkKey,
@@ -14,6 +16,8 @@ import {
   raycastVoxels,
   setChunkBlock,
   terrainHeight,
+  getBlockLoot,
+  pickupDroppedItem,
   countInventoryItem,
   createNexusQuestState,
   getNexusNodes,
@@ -97,6 +101,44 @@ describe("inventory and crafting", () => {
       ),
     ).toBe(true);
     expect(craftInventory(Array(9).fill(null), GAME_RECIPES[0]!)).toBeNull();
+  });
+});
+
+describe("drop and pickup persistence primitives", () => {
+  it("generates distinct yellow and purple crystal loot", () => {
+    expect(getBlockLoot(BlockId.SunShardOre)).toEqual([
+      { itemId: BlockId.SunShard, count: 1 },
+    ]);
+    expect(getBlockLoot(BlockId.DuskShardOre)).toEqual([
+      { itemId: BlockId.DuskShard, count: 1 },
+    ]);
+  });
+
+  it("keeps a dropped item when inventory is full and picks it up after space exists", () => {
+    const full: Inventory = Array.from({ length: 36 }, () => ({
+      blockId: BlockId.Slate,
+      count: 64,
+    }));
+    const drop = {
+      id: "drop-1",
+      kind: "dropped-item" as const,
+      itemId: BlockId.SunShard,
+      count: 1,
+      position: [1, 2, 3] as const,
+      createdAt: "now",
+    };
+    expect(pickupDroppedItem(full, drop).remaining).toEqual(drop);
+    const room = [...full];
+    room[35] = null;
+    const picked = pickupDroppedItem(room, drop);
+    expect(picked.remaining).toBeNull();
+    expect(picked.inventory[35]).toEqual({
+      blockId: BlockId.SunShard,
+      count: 1,
+    });
+    expect(
+      addToInventoryWithRemainder(full, BlockId.DuskShard, 1).remaining,
+    ).toBe(1);
   });
 });
 
