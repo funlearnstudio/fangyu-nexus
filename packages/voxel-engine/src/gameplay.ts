@@ -208,6 +208,15 @@ export interface GameRecipe {
 }
 export const GAME_RECIPES: readonly GameRecipe[] = [
   {
+    id: "trail-tool",
+    name: "拓荒鑿",
+    inputs: [
+      { blockId: BlockId.Timber, count: 2 },
+      { blockId: BlockId.Slate, count: 3 },
+    ],
+    output: { blockId: BlockId.TrailTool, count: 1 },
+  },
+  {
     id: "timber-to-loam",
     name: "培養土",
     inputs: [{ blockId: BlockId.Timber, count: 1 }],
@@ -221,6 +230,33 @@ export const GAME_RECIPES: readonly GameRecipe[] = [
       { blockId: BlockId.Slate, count: 2 },
     ],
     output: { blockId: BlockId.GlowCrystal, count: 1 },
+  },
+  {
+    id: "field-flask",
+    name: "空野行瓶",
+    inputs: [
+      { blockId: BlockId.CopperBloom, count: 1 },
+      { blockId: BlockId.Dune, count: 2 },
+    ],
+    output: { blockId: BlockId.EmptyFlask, count: 1 },
+  },
+  {
+    id: "fiber-shears",
+    name: "纖維剪",
+    inputs: [
+      { blockId: BlockId.CopperBloom, count: 2 },
+      { blockId: BlockId.Timber, count: 1 },
+    ],
+    output: { blockId: BlockId.FiberShears, count: 1 },
+  },
+  {
+    id: "trail-ration",
+    name: "遠行糧",
+    inputs: [
+      { blockId: BlockId.Sungrain, count: 2 },
+      { blockId: BlockId.MeadowMilk, count: 1 },
+    ],
+    output: { blockId: BlockId.TrailRation, count: 2 },
   },
 ];
 

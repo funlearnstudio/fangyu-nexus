@@ -63,7 +63,7 @@ export async function PUT(request: Request, context: Context) {
       entry[0] >= 16 * 64 * 16 ||
       !Number.isInteger(entry[1]) ||
       entry[1] < 0 ||
-      entry[1] > 13
+      entry[1] > 22
     )
       return NextResponse.json({ error: "invalid_delta" }, { status: 400 });
     modifiedBlocks.push([entry[0], entry[1] as BlockIdValue]);
@@ -72,10 +72,26 @@ export async function PUT(request: Request, context: Context) {
     return NextResponse.json({ error: "invalid_entities" }, { status: 400 });
   const entities: WorldEntity[] = [];
   for (const entity of body.entities) {
+    const kind = (entity as { kind?: unknown } | null)?.kind;
+    if (
+      kind === "crop" &&
+      typeof (entity as { id?: unknown }).id === "string" &&
+      (entity as { cropId?: unknown }).cropId === "sungrain" &&
+      typeof (entity as { plantedAt?: unknown }).plantedAt === "string" &&
+      typeof (entity as { growthSeconds?: unknown }).growthSeconds ===
+        "number" &&
+      (entity as { growthSeconds: number }).growthSeconds >= 30 &&
+      Array.isArray((entity as { position?: unknown }).position) &&
+      (entity as { position: unknown[] }).position.length === 3 &&
+      (entity as { position: unknown[] }).position.every(Number.isFinite)
+    ) {
+      entities.push(entity as WorldEntity);
+      continue;
+    }
     if (
       !entity ||
       typeof entity !== "object" ||
-      (entity as { kind?: unknown }).kind !== "dropped-item" ||
+      kind !== "dropped-item" ||
       typeof (entity as { id?: unknown }).id !== "string" ||
       !Number.isInteger((entity as { itemId?: unknown }).itemId) ||
       !Number.isInteger((entity as { count?: unknown }).count) ||

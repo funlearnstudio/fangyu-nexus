@@ -1963,7 +1963,16 @@ dd {
   border-left: 3px solid var(--diamond-400);
   background: rgb(10 23 28 / 82%);
   font: 0.68rem var(--font-mono);
-  pointer-events: none;
+  pointer-events: auto;
+}
+.quest-tracker > button {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
 }
 .quest-tracker strong {
   color: var(--diamond-300);
@@ -1975,6 +1984,9 @@ dd {
 .quest-tracker small {
   color: #b8c9c8;
   line-height: 1.35;
+}
+.quest-tracker small.done {
+  color: #76dfa2;
 }
 .quest-tracker.complete {
   border-color: #6ddb9a;
@@ -1998,7 +2010,7 @@ dd {
   bottom: 6.8rem;
   left: 50%;
   display: grid;
-  grid-template-columns: repeat(2, 150px);
+  grid-template-columns: repeat(3, 150px);
   gap: 0.45rem;
   transform: translateX(-50%);
 }
@@ -2021,6 +2033,21 @@ dd {
 }
 .vitals > div:last-child i {
   background: #d6a933;
+}
+.vitals > div.oxygen i {
+  background: #4cc9e8;
+}
+.biome-indicator {
+  position: absolute;
+  top: 4.7rem;
+  left: 50%;
+  padding: 0.35rem 0.65rem;
+  border-bottom: 1px solid rgb(101 208 222 / 65%);
+  background: rgb(6 18 23 / 58%);
+  transform: translateX(-50%);
+  color: #d7e8e7;
+  font: 0.65rem var(--font-mono);
+  letter-spacing: 0.08em;
 }
 .hotbar {
   position: absolute;
@@ -2110,6 +2137,100 @@ dd {
 .pause-menu h2 {
   margin-top: 0;
   font-size: clamp(1.8rem, 5vw, 3rem);
+}
+.quest-journal {
+  width: min(980px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow: hidden;
+  padding: clamp(1rem, 3vw, 2rem);
+  border: 1px solid rgb(121 215 228 / 50%);
+  background: #111d22;
+  box-shadow: 8px 8px 0 rgb(0 0 0 / 45%);
+}
+.quest-journal header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid #385058;
+}
+.quest-journal h2 {
+  margin: 0.2rem 0;
+}
+.quest-journal-layout {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.8fr) minmax(280px, 1.4fr);
+  gap: 1rem;
+  min-height: 420px;
+  max-height: 60vh;
+  padding-top: 1rem;
+}
+.quest-journal nav,
+.quest-journal main {
+  overflow: auto;
+}
+.quest-journal nav {
+  display: grid;
+  align-content: start;
+  gap: 0.25rem;
+}
+.quest-journal nav span {
+  padding: 0.45rem 0.6rem;
+  color: #87999d;
+  font: 0.7rem var(--font-mono);
+}
+.quest-journal nav span.done {
+  color: #74d69b;
+}
+.quest-journal nav span.active {
+  border-left: 3px solid var(--diamond-400);
+  background: #20333a;
+  color: white;
+}
+.tutorial-panel {
+  width: min(720px, 100%);
+  padding: clamp(1.4rem, 5vw, 3.2rem);
+  border: 1px solid var(--diamond-400);
+  background: linear-gradient(145deg, #17282f, #121b20);
+  box-shadow: 9px 9px 0 rgb(0 0 0 / 50%);
+}
+.tutorial-panel h2 {
+  font-size: clamp(2rem, 6vw, 4rem);
+  margin: 0.3rem 0 1rem;
+}
+.tutorial-panel > p:not(.eyebrow) {
+  min-height: 5rem;
+  color: #cad6d4;
+  line-height: 1.7;
+}
+.tutorial-progress {
+  display: grid;
+  grid-template-columns: repeat(11, 1fr);
+  gap: 0.35rem;
+  margin: 1.3rem 0;
+}
+.tutorial-progress i {
+  height: 4px;
+  background: #34474e;
+}
+.tutorial-progress i.active {
+  background: var(--diamond-400);
+}
+.tutorial-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+.tutorial-actions button {
+  min-height: 44px;
+  padding: 0 1rem;
+}
+@media (max-width: 700px) {
+  .quest-journal-layout {
+    grid-template-columns: 1fr;
+  }
+  .quest-journal nav {
+    max-height: 170px;
+  }
 }
 .pause-actions {
   display: grid;

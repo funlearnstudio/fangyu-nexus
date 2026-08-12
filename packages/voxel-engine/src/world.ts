@@ -2,7 +2,83 @@ import { BlockId, type BlockIdValue, getBlockDefinition } from "./blocks";
 
 export const CHUNK_SIZE = 16;
 export const WORLD_HEIGHT = 64;
-export const GENERATION_VERSION = 1;
+export const GENERATION_VERSION = 2;
+export const SEA_LEVEL = 19;
+
+export type BiomeId =
+  | "plains"
+  | "forest"
+  | "dense-forest"
+  | "desert"
+  | "beach"
+  | "ocean"
+  | "river"
+  | "mountain"
+  | "tundra"
+  | "swamp";
+
+export interface BiomeDefinition {
+  id: BiomeId;
+  name: string;
+  treeDensity: number;
+  surface: BlockIdValue;
+}
+
+export type LandmarkType =
+  | "village"
+  | "abandoned-home"
+  | "camp"
+  | "ruin"
+  | "mine"
+  | "nexus-tower";
+
+export interface WorldLandmark {
+  id: string;
+  type: LandmarkType;
+  name: string;
+  x: number;
+  z: number;
+}
+
+export type WeatherType = "clear" | "rain" | "fog" | "snow";
+
+export const BIOMES: readonly BiomeDefinition[] = [
+  {
+    id: "plains",
+    name: "青風平原",
+    treeDensity: 0.004,
+    surface: BlockId.Verdant,
+  },
+  {
+    id: "forest",
+    name: "琥珀森林",
+    treeDensity: 0.026,
+    surface: BlockId.Verdant,
+  },
+  {
+    id: "dense-forest",
+    name: "深冠密林",
+    treeDensity: 0.055,
+    surface: BlockId.Verdant,
+  },
+  { id: "desert", name: "星砂荒漠", treeDensity: 0, surface: BlockId.Dune },
+  { id: "beach", name: "潮痕海灘", treeDensity: 0, surface: BlockId.Dune },
+  { id: "ocean", name: "蔚藍外海", treeDensity: 0, surface: BlockId.Dune },
+  { id: "river", name: "鏡脈河川", treeDensity: 0, surface: BlockId.Loam },
+  {
+    id: "mountain",
+    name: "斷層高山",
+    treeDensity: 0.002,
+    surface: BlockId.Slate,
+  },
+  {
+    id: "tundra",
+    name: "霜原凍土",
+    treeDensity: 0.001,
+    surface: BlockId.Slate,
+  },
+  { id: "swamp", name: "暮霧沼澤", treeDensity: 0.018, surface: BlockId.Loam },
+] as const;
 
 export interface ChunkCoordinate {
   x: number;
@@ -147,6 +223,88 @@ function valueNoise(
   return a + (b - a) * tx + (c + (d - c) * tx - (a + (b - a) * tx)) * tz;
 }
 
+export function getBiomeAt(
+  seedText: string,
+  worldX: number,
+  worldZ: number,
+): BiomeDefinition {
+  if (Math.hypot(worldX, worldZ) < 28) return BIOMES[0]!;
+  const seed = hashSeed(seedText);
+  const continental = valueNoise(seed, worldX, worldZ, 118, 701);
+  const temperature = valueNoise(seed, worldX, worldZ, 92, 709);
+  const moisture = valueNoise(seed, worldX, worldZ, 78, 719);
+  const ridge = valueNoise(seed, worldX, worldZ, 66, 727);
+  const river = Math.abs(valueNoise(seed, worldX, worldZ, 54, 733) - 0.5);
+  if (continental < 0.25) return BIOMES[5]!;
+  if (continental < 0.31) return BIOMES[4]!;
+  if (river < 0.025 && continental < 0.72) return BIOMES[6]!;
+  if (ridge > 0.76) return BIOMES[7]!;
+  if (temperature < 0.27) return BIOMES[8]!;
+  if (temperature > 0.64 && moisture < 0.38) return BIOMES[3]!;
+  if (moisture > 0.75 && continental < 0.62) return BIOMES[9]!;
+  if (moisture > 0.65) return BIOMES[2]!;
+  if (moisture > 0.49) return BIOMES[1]!;
+  return BIOMES[0]!;
+}
+
+function findBiomeLocation(
+  seedText: string,
+  allowed: readonly BiomeId[],
+  minimum: number,
+  maximum: number,
+  phase: number,
+): readonly [number, number] {
+  for (let radius = minimum; radius <= maximum; radius += 8)
+    for (let step = 0; step < 32; step += 1) {
+      const angle = (step / 32) * Math.PI * 2 + phase;
+      const x = Math.round(Math.cos(angle) * radius);
+      const z = Math.round(Math.sin(angle) * radius);
+      if (allowed.includes(getBiomeAt(seedText, x, z).id)) return [x, z];
+    }
+  return [
+    Math.round(Math.cos(phase) * minimum),
+    Math.round(Math.sin(phase) * minimum),
+  ];
+}
+
+export function getWorldLandmarks(seedText: string): readonly WorldLandmark[] {
+  const seed = hashSeed(seedText);
+  const phase = (seed % 628) / 100;
+  const specs = [
+    ["village", "風徑聚落", ["plains", "forest"], 44, 88, 0],
+    ["abandoned-home", "遺忘居所", ["forest", "dense-forest"], 72, 140, 0.9],
+    ["camp", "遠行者營地", ["plains", "desert"], 100, 180, 1.8],
+    ["ruin", "斷響遺跡", ["desert", "swamp"], 130, 230, 2.7],
+    ["mine", "深紋礦口", ["mountain", "tundra"], 150, 260, 3.6],
+    ["nexus-tower", "Nexus 遙塔", ["plains", "mountain"], 190, 310, 4.5],
+  ] as const;
+  return specs.map(([type, name, biomes, min, max, offset], index) => {
+    const [x, z] = findBiomeLocation(
+      seedText,
+      biomes,
+      min,
+      max,
+      phase + offset,
+    );
+    return { id: `${type}-${index}`, type, name, x, z };
+  });
+}
+
+export function getWeatherAt(
+  seedText: string,
+  timeOfDay: number,
+  worldX: number,
+  worldZ: number,
+): WeatherType {
+  const biome = getBiomeAt(seedText, worldX, worldZ).id;
+  if (biome === "desert" || biome === "beach") return "clear";
+  const cycle =
+    (Math.floor((((timeOfDay % 1) + 1) % 1) * 36) + hashSeed(seedText)) % 13;
+  if (biome === "swamp" && (cycle === 2 || cycle === 3)) return "fog";
+  if (cycle !== 5 && cycle !== 6 && cycle !== 7) return "clear";
+  return biome === "tundra" || biome === "mountain" ? "snow" : "rain";
+}
+
 export function terrainHeight(
   seedText: string,
   worldX: number,
@@ -155,16 +313,118 @@ export function terrainHeight(
   const seed = hashSeed(seedText);
   const broad = valueNoise(seed, worldX, worldZ, 48, 101);
   const detail = valueNoise(seed, worldX, worldZ, 13, 211);
-  return Math.max(
-    8,
-    Math.min(WORLD_HEIGHT - 10, Math.floor(14 + broad * 18 + detail * 5)),
-  );
+  const biome = getBiomeAt(seedText, worldX, worldZ).id;
+  const base =
+    biome === "ocean"
+      ? 10 + broad * 5
+      : biome === "beach"
+        ? 17 + broad * 3
+        : biome === "river"
+          ? 15 + broad * 2
+          : biome === "mountain"
+            ? 32 + broad * 19 + detail * 5
+            : biome === "swamp"
+              ? 17 + broad * 4
+              : biome === "desert"
+                ? 18 + broad * 8 + detail * 2
+                : biome === "tundra"
+                  ? 21 + broad * 10 + detail * 2
+                  : 14 + broad * 18 + detail * 5;
+  return Math.max(8, Math.min(WORLD_HEIGHT - 10, Math.floor(base)));
 }
 
 function isCave(seed: number, x: number, y: number, z: number): boolean {
   const a = valueNoise(seed ^ Math.imul(y, 911), x, z, 10, 307);
   const b = random2(seed ^ Math.imul(y, 1597), x, z, 401);
   return y > 3 && a > 0.72 && b > 0.68;
+}
+
+function applyLandmarkBlocks(
+  seedText: string,
+  chunkX: number,
+  chunkZ: number,
+  blocks: Uint8Array,
+): void {
+  const setWorld = (
+    worldX: number,
+    y: number,
+    worldZ: number,
+    id: BlockIdValue,
+  ) => {
+    const localX = worldX - chunkX * CHUNK_SIZE;
+    const localZ = worldZ - chunkZ * CHUNK_SIZE;
+    if (
+      localX < 0 ||
+      localX >= CHUNK_SIZE ||
+      localZ < 0 ||
+      localZ >= CHUNK_SIZE ||
+      y < 0 ||
+      y >= WORLD_HEIGHT
+    )
+      return;
+    blocks[voxelIndex(localX, y, localZ)] = id;
+  };
+  const house = (centerX: number, centerZ: number, width = 7, depth = 6) => {
+    const base = terrainHeight(seedText, centerX, centerZ) + 1;
+    for (let z = -Math.floor(depth / 2); z <= Math.floor(depth / 2); z += 1)
+      for (let x = -Math.floor(width / 2); x <= Math.floor(width / 2); x += 1) {
+        setWorld(centerX + x, base, centerZ + z, BlockId.Timber);
+        const edge =
+          Math.abs(x) === Math.floor(width / 2) ||
+          Math.abs(z) === Math.floor(depth / 2);
+        if (edge)
+          for (let y = 1; y <= 3; y += 1)
+            setWorld(
+              centerX + x,
+              base + y,
+              centerZ + z,
+              x === 0 && z === Math.floor(depth / 2) && y < 3
+                ? BlockId.Air
+                : BlockId.Timber,
+            );
+        setWorld(centerX + x, base + 4, centerZ + z, BlockId.Canopy);
+      }
+  };
+  for (const landmark of getWorldLandmarks(seedText)) {
+    if (landmark.type === "village") {
+      for (let offset = -22; offset <= 22; offset += 1) {
+        const yX = terrainHeight(seedText, landmark.x + offset, landmark.z);
+        const yZ = terrainHeight(seedText, landmark.x, landmark.z + offset);
+        setWorld(landmark.x + offset, yX, landmark.z, BlockId.Dune);
+        setWorld(landmark.x, yZ, landmark.z + offset, BlockId.Dune);
+      }
+      house(landmark.x - 10, landmark.z - 9);
+      house(landmark.x + 10, landmark.z - 8);
+      house(landmark.x - 9, landmark.z + 10);
+      house(landmark.x + 11, landmark.z + 9, 9, 7);
+      for (let z = 4; z <= 12; z += 1)
+        for (let x = -3; x <= 3; x += 1) {
+          const wx = landmark.x + x;
+          const wz = landmark.z + z;
+          setWorld(wx, terrainHeight(seedText, wx, wz), wz, BlockId.Loam);
+        }
+    } else if (landmark.type === "nexus-tower") {
+      const base = terrainHeight(seedText, landmark.x, landmark.z) + 1;
+      for (let y = 0; y < 12; y += 1)
+        for (let z = -2; z <= 2; z += 1)
+          for (let x = -2; x <= 2; x += 1)
+            if (Math.abs(x) === 2 || Math.abs(z) === 2)
+              setWorld(
+                landmark.x + x,
+                base + y,
+                landmark.z + z,
+                y > 8 ? BlockId.GlowCrystal : BlockId.Slate,
+              );
+    } else if (landmark.type === "ruin" || landmark.type === "mine") {
+      const base = terrainHeight(seedText, landmark.x, landmark.z) + 1;
+      for (let x = -5; x <= 5; x += 5)
+        for (let z = -4; z <= 4; z += 4)
+          for (let y = 0; y < 3 + ((x + z + 12) % 4); y += 1)
+            setWorld(landmark.x + x, base + y, landmark.z + z, BlockId.Slate);
+    } else if (landmark.type === "camp") {
+      house(landmark.x, landmark.z, 5, 4);
+    } else house(landmark.x, landmark.z);
+  }
 }
 
 export function generateChunk(
@@ -175,21 +435,23 @@ export function generateChunk(
 ): ChunkData {
   const blocks = new Uint8Array(CHUNK_SIZE * WORLD_HEIGHT * CHUNK_SIZE);
   const seed = hashSeed(seedText);
-  const seaLevel = 19;
+  const seaLevel = SEA_LEVEL;
 
   for (let z = 0; z < CHUNK_SIZE; z += 1) {
     for (let x = 0; x < CHUNK_SIZE; x += 1) {
       const worldX = chunkX * CHUNK_SIZE + x;
       const worldZ = chunkZ * CHUNK_SIZE + z;
       const height = terrainHeight(seedText, worldX, worldZ);
-      const beach = height <= seaLevel + 1;
+      const biome = getBiomeAt(seedText, worldX, worldZ);
+      const sandy =
+        biome.id === "beach" || biome.id === "ocean" || biome.id === "desert";
       for (let y = 0; y < WORLD_HEIGHT; y += 1) {
         let id: BlockIdValue = BlockId.Air;
         if (y <= height) {
           if (y < height - 4 && isCave(seed, worldX, y, worldZ))
             id = BlockId.Air;
-          else if (y === height) id = beach ? BlockId.Dune : BlockId.Verdant;
-          else if (y > height - 4) id = beach ? BlockId.Dune : BlockId.Loam;
+          else if (y === height) id = biome.surface;
+          else if (y > height - 4) id = sandy ? BlockId.Dune : BlockId.Loam;
           else {
             const ore = random2(seed ^ Math.imul(y, 541), worldX, worldZ, 509);
             id =
@@ -209,9 +471,9 @@ export function generateChunk(
 
       const treeChance = random2(seed, worldX, worldZ, 613);
       if (
-        !beach &&
+        biome.treeDensity > 0 &&
         height + 6 < WORLD_HEIGHT &&
-        treeChance > 0.992 &&
+        treeChance > 1 - biome.treeDensity &&
         x > 2 &&
         x < 13 &&
         z > 2 &&
@@ -229,6 +491,8 @@ export function generateChunk(
       }
     }
   }
+
+  applyLandmarkBlocks(seedText, chunkX, chunkZ, blocks);
 
   for (const [index, blockId] of modifications)
     if (index >= 0 && index < blocks.length) blocks[index] = blockId;
@@ -318,7 +582,7 @@ export function buildChunkMesh(
     for (let z = 0; z < CHUNK_SIZE; z += 1)
       for (let x = 0; x < CHUNK_SIZE; x += 1) {
         const id = getChunkBlock(chunk, x, y, z);
-        if (id === BlockId.Air || id === BlockId.Water) continue;
+        if (id === BlockId.Air) continue;
         const definition = getBlockDefinition(id);
         for (const face of faces) {
           const nx = face.normal[0],
@@ -328,7 +592,10 @@ export function buildChunkMesh(
             ? lookup(originX + x + nx, y + ny, originZ + z + nz)
             : getChunkBlock(chunk, x + nx, y + ny, z + nz);
           const adjacentDefinition = getBlockDefinition(adjacent);
-          if (adjacent !== BlockId.Air && !adjacentDefinition.transparent)
+          if (
+            (adjacent === id && definition.transparent) ||
+            (adjacent !== BlockId.Air && !adjacentDefinition.transparent)
+          )
             continue;
           const base = positions.length / 3;
           const variation =

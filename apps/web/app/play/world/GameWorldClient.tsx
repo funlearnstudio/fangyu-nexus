@@ -16,21 +16,33 @@ import {
   CHUNK_SIZE,
   GENERATION_VERSION,
   GAME_RECIPES,
+  SEA_LEVEL,
   WORLD_HEIGHT,
   canPlaceBlock,
+  addToInventoryWithRemainder,
   chunkKey,
   collidesWithWorld,
-  craftInventory,
   countInventoryItem,
+  craftInventory,
+  consumeInventoryItem,
   getBlockLoot,
+  getBiomeAt,
+  getCurrentQuest,
   getNexusNodes,
+  getWorldLandmarks,
+  getWeatherAt,
   getBlockDefinition,
   getChunkBlock,
   playerAabb,
   pickupDroppedItem,
+  cropGrowthStage,
+  isCropMature,
   raycastVoxels,
   removeFromInventory,
   normalizeNexusQuestState,
+  objectiveProgress,
+  applyGameplayEvent,
+  MAIN_QUESTS,
   repairNexusNode,
   setChunkBlock,
   terrainHeight,
@@ -40,14 +52,18 @@ import {
   type BlockIdValue,
   type ChunkData,
   type ChunkMeshData,
+  type CropEntity,
   type DroppedItemEntity,
   type GameWorldMetadata,
+  type GameplayEvent,
   type Inventory,
   type NexusQuestState,
   type PersistedChunkDelta,
   type PlayerWorldState,
   type RaycastHit,
   type WorldEntity,
+  type WorldLandmark,
+  type WeatherType,
 } from "@fangyu/voxel-engine";
 import {
   getLocalChunk,
@@ -75,6 +91,7 @@ type LoadedChunk = {
 };
 type RenderChunk = { key: string; revision: number; mesh: ChunkMeshData };
 type RenderDrop = DroppedItemEntity & { key: string };
+type RenderCrop = CropEntity & { key: string };
 type HudState = {
   position: [number, number, number];
   chunk: [number, number];
@@ -87,6 +104,9 @@ type HudState = {
   health: number;
   hunger: number;
   grounded: boolean;
+  oxygen: number;
+  biome: string;
+  weather: WeatherType;
   time: number;
   hit: RaycastHit | null;
   dead: boolean;
@@ -107,6 +127,9 @@ const emptyHud: HudState = {
   health: 20,
   hunger: 20,
   grounded: false,
+  oxygen: 20,
+  biome: "青風平原",
+  weather: "clear",
   time: 0.28,
   hit: null,
   dead: false,
@@ -131,6 +154,8 @@ export function GameWorldClient() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [paused, setPaused] = useState(true);
   const [inventoryOpen, setInventoryOpen] = useState(false);
+  const [questOpen, setQuestOpen] = useState(false);
+  const [tutorialPage, setTutorialPage] = useState<number | null>(null);
   const [debug, setDebug] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
   const [hud, setHud] = useState(emptyHud);
@@ -149,6 +174,14 @@ export function GameWorldClient() {
       setWorld(localWorld);
       setPlayer(localPlayer);
       setSettings(readGameSettings());
+      const replay = localStorage.getItem("fangyu-replay-tutorial") === "1";
+      if (replay) localStorage.removeItem("fangyu-replay-tutorial");
+      if (
+        replay ||
+        (!localPlayer.quest?.tutorialCompleted &&
+          !localPlayer.quest?.tutorialSkipped)
+      )
+        setTutorialPage(0);
       void syncWorldToCloud(localWorld);
     })().catch(() =>
       setLoadError(
@@ -159,8 +192,16 @@ export function GameWorldClient() {
 
   useEffect(() => {
     const toggle = () => setDebug((value) => !value);
+    const journal = () => {
+      document.exitPointerLock();
+      setQuestOpen((value) => !value);
+    };
     window.addEventListener("fangyu-debug", toggle);
-    return () => window.removeEventListener("fangyu-debug", toggle);
+    window.addEventListener("fangyu-journal", journal);
+    return () => {
+      window.removeEventListener("fangyu-debug", toggle);
+      window.removeEventListener("fangyu-journal", journal);
+    };
   }, []);
 
   const resume = useCallback(() => {
@@ -255,11 +296,23 @@ export function GameWorldClient() {
           <span>HUNGER</span>
           <i style={{ width: `${hud.hunger * 5}%` }} />
         </div>
+        {hud.oxygen < 20 && (
+          <div className="oxygen" aria-label={`氧氣 ${hud.oxygen}`}>
+            <span>OXYGEN</span>
+            <i style={{ width: `${hud.oxygen * 5}%` }} />
+          </div>
+        )}
+      </div>
+      <div className="biome-indicator">
+        {hud.biome} · {hud.weather.toUpperCase()}
       </div>
       <QuestTracker
         quest={hud.quest}
-        inventory={hud.inventory}
         message={hud.questMessage}
+        openJournal={() => {
+          document.exitPointerLock();
+          setQuestOpen(true);
+        }}
       />
       <Hotbar inventory={hud.inventory} selected={hud.selected} />
       <div className="selected-block">
@@ -270,7 +323,7 @@ export function GameWorldClient() {
         }
       </div>
       {debug && <DebugOverlay hud={hud} />}
-      {(paused || inventoryOpen) && (
+      {(paused || inventoryOpen) && tutorialPage === null && !questOpen && (
         <PauseLayer
           world={world}
           inventoryOpen={inventoryOpen}
@@ -278,6 +331,29 @@ export function GameWorldClient() {
           resume={resume}
           setInventoryOpen={setInventoryOpen}
           save={async () => saveRef.current()}
+        />
+      )}
+      {questOpen && (
+        <QuestJournal
+          quest={hud.quest}
+          close={() => {
+            setQuestOpen(false);
+            resume();
+          }}
+        />
+      )}
+      {tutorialPage !== null && (
+        <TutorialOverlay
+          page={tutorialPage}
+          setPage={setTutorialPage}
+          finish={(skipped) => {
+            window.dispatchEvent(
+              new CustomEvent("fangyu-tutorial", {
+                detail: skipped ? "skip" : "complete",
+              }),
+            );
+            setTutorialPage(null);
+          }}
         />
       )}
       {hud.dead && (
@@ -334,25 +410,190 @@ function Hotbar({
 
 function QuestTracker({
   quest,
-  inventory,
   message,
+  openJournal,
 }: {
   quest: NexusQuestState;
-  inventory: Inventory;
   message: string;
+  openJournal: () => void;
 }) {
-  const crystals = countInventoryItem(inventory, BlockId.GlowCrystal);
-  const complete = quest.repairedNodeIds.length === 3;
+  const current = getCurrentQuest(quest);
+  const complete = quest.postGame;
   return (
     <aside className={`quest-tracker${complete ? " complete" : ""}`}>
-      <strong>{complete ? "NEXUS RESTORED" : "NEXUS BEACON"}</strong>
-      <span>
-        {complete ? "三座節點已重新連線。" : "蒐集輝晶，修復散落的節點。"}
-      </span>
-      <b>輝晶 {crystals} / 3</b>
-      <b>節點 {quest.repairedNodeIds.length} / 3</b>
+      <button type="button" onClick={openJournal}>
+        <strong>{complete ? "NEXUS NETWORK RESTORED" : "NEXUS JOURNEY"}</strong>
+        <b>LEVEL {current.level} / 50</b>
+        <span>{current.title}</span>
+        {current.objectives.slice(0, 4).map((entry) => {
+          const progress = objectiveProgress(quest, entry);
+          const done = progress >= entry.target;
+          return (
+            <small key={entry.id} className={done ? "done" : ""}>
+              {done ? "✓" : "□"} {entry.label} {progress}/{entry.target}
+            </small>
+          );
+        })}
+      </button>
       <small>{message}</small>
     </aside>
+  );
+}
+
+function QuestJournal({
+  quest,
+  close,
+}: {
+  quest: NexusQuestState;
+  close: () => void;
+}) {
+  const current = getCurrentQuest(quest);
+  return (
+    <div className="game-modal-backdrop quest-journal-backdrop">
+      <section className="quest-journal" role="dialog" aria-modal="true">
+        <header>
+          <div>
+            <p className="eyebrow">NEXUS JOURNEY</p>
+            <h2>
+              LEVEL {current.level} / 50 · {current.title}
+            </h2>
+            <p>{current.description}</p>
+          </div>
+          <button type="button" onClick={close}>
+            關閉
+          </button>
+        </header>
+        <div className="quest-journal-layout">
+          <nav aria-label="主線關卡">
+            {MAIN_QUESTS.map((entry) => {
+              const done = quest.completedQuestIds.includes(entry.id);
+              const active = entry.id === current.id;
+              return (
+                <span
+                  key={entry.id}
+                  className={`${done ? "done" : ""}${active ? " active" : ""}`}
+                >
+                  {done ? "✓" : active ? "◆" : "·"} {entry.level}. {entry.title}
+                </span>
+              );
+            })}
+          </nav>
+          <main>
+            <h3>目前目標</h3>
+            {current.objectives.map((entry) => {
+              const progress = objectiveProgress(quest, entry);
+              return (
+                <p key={entry.id}>
+                  {progress >= entry.target ? "✓" : "□"} {entry.label} —{" "}
+                  {progress}/{entry.target}
+                </p>
+              );
+            })}
+            <h3>獎勵</h3>
+            {current.rewards.map((reward) => (
+              <p key={reward.label}>{reward.label}</p>
+            ))}
+            <h3>Nexus Network</h3>
+            <p>已修復節點：{quest.repairedNodeIds.length}</p>
+            <p>已發現生態系：{quest.discoveredBiomes.length}</p>
+            <p>已發現地標：{quest.discoveredStructures.length}</p>
+            <p>支線任務將在居民系統解鎖後顯示於此區。</p>
+          </main>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+const TUTORIAL_PAGES = [
+  [
+    "Welcome to 方域 Nexus",
+    "這是一個可永久探索、建築與生存的原創 voxel 世界。Nexus Journey 提供方向，但不限制你的沙盒自由。",
+  ],
+  [
+    "Movement",
+    "WASD 移動、滑鼠環視、Space 跳躍、Shift 衝刺。Esc 可釋放滑鼠並暫停。",
+  ],
+  [
+    "Mining",
+    "用準星對準方塊並按左鍵。破壞後的材料會掉在世界中，靠近即可拾取。",
+  ],
+  [
+    "Building",
+    "選擇快捷列物品並按右鍵放置。系統會阻止你把方塊放進自己的碰撞箱。",
+  ],
+  ["Inventory", "按 E 開啟 36 格背包與 9 格快捷列；按 1–9 選擇欄位。"],
+  [
+    "Crafting",
+    "背包中的配方會消耗材料並立即產生新物品。後續主線會解鎖更多原創方域設備。",
+  ],
+  [
+    "Health / Hunger",
+    "高處落下與敵對生物會降低生命；衝刺會消耗飢餓。生命歸零後可在安全出生點重生。",
+  ],
+  [
+    "Animals",
+    "世界生物有自己的移動、生命與掉落架構。動物照料會成為主線的一部分。",
+  ],
+  [
+    "Farming",
+    "農耕系統會讓你建立可持續的食物來源，作物成長會納入世界存檔時間。",
+  ],
+  [
+    "Villages",
+    "遠方聚落將提供居民互動、交易與支線任務，主線不會強迫你立刻離開自己的基地。",
+  ],
+  [
+    "Nexus Journey",
+    "主線共有 50 關並依序解鎖。按 J 開啟任務日誌；跳過教學不會跳過 Level 1。",
+  ],
+] as const;
+
+function TutorialOverlay({
+  page,
+  setPage,
+  finish,
+}: {
+  page: number;
+  setPage: (page: number) => void;
+  finish: (skipped: boolean) => void;
+}) {
+  const entry = TUTORIAL_PAGES[page]!;
+  const last = page === TUTORIAL_PAGES.length - 1;
+  return (
+    <div className="game-modal-backdrop tutorial-backdrop">
+      <section className="tutorial-panel" role="dialog" aria-modal="true">
+        <p className="eyebrow">
+          FIELD GUIDE · {page + 1} / {TUTORIAL_PAGES.length}
+        </p>
+        <h2>{entry[0]}</h2>
+        <p>{entry[1]}</p>
+        <div className="tutorial-progress">
+          {TUTORIAL_PAGES.map((_, index) => (
+            <i key={index} className={index <= page ? "active" : ""} />
+          ))}
+        </div>
+        <div className="tutorial-actions">
+          <button
+            type="button"
+            disabled={page === 0}
+            onClick={() => setPage(page - 1)}
+          >
+            BACK
+          </button>
+          <button
+            type="button"
+            className="primary-link"
+            onClick={() => (last ? finish(false) : setPage(page + 1))}
+          >
+            {last ? "ENTER WORLD" : "NEXT"}
+          </button>
+          <button type="button" onClick={() => finish(true)}>
+            SKIP TUTORIAL
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -484,6 +725,9 @@ function PauseLayer({
           <span>1–9 快捷列</span>
           <span>E 背包</span>
           <span>F 修復 Nexus 節點（3 輝晶）</span>
+          <span>R 與動物互動</span>
+          <span>H 收成成熟作物</span>
+          <span>J 任務日誌</span>
           <span>F3 Debug</span>
           <span>Esc 暫停</span>
         </div>
@@ -591,6 +835,45 @@ function DroppedItemField({ drops }: { drops: readonly RenderDrop[] }) {
   );
 }
 
+function CropField({ crops }: { crops: readonly RenderCrop[] }) {
+  const mesh = useRef<THREE.InstancedMesh>(null);
+  const elapsed = useRef(1);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const update = useCallback(() => {
+    if (!mesh.current) return;
+    crops.forEach((crop, index) => {
+      const stage = cropGrowthStage(crop);
+      const height = 0.22 + stage * 0.2;
+      dummy.position.set(
+        crop.position[0],
+        crop.position[1] + height / 2,
+        crop.position[2],
+      );
+      dummy.scale.set(1 + stage * 0.12, height, 1 + stage * 0.12);
+      dummy.rotation.y = index * 1.7;
+      dummy.updateMatrix();
+      mesh.current!.setMatrixAt(index, dummy.matrix);
+    });
+    mesh.current.count = crops.length;
+    mesh.current.instanceMatrix.needsUpdate = true;
+  }, [crops, dummy]);
+  useEffect(update, [update]);
+  useFrame((_, delta) => {
+    elapsed.current += delta;
+    if (elapsed.current > 2) {
+      elapsed.current = 0;
+      update();
+    }
+  });
+  if (crops.length === 0) return null;
+  return (
+    <instancedMesh ref={mesh} args={[undefined, undefined, crops.length]}>
+      <boxGeometry args={[0.28, 1, 0.28]} />
+      <meshLambertMaterial color="#d7b540" />
+    </instancedMesh>
+  );
+}
+
 function WorldRuntime({
   world,
   initialPlayer,
@@ -623,6 +906,7 @@ function WorldRuntime({
     requestId = useRef(0);
   const [renderChunks, setRenderChunks] = useState<RenderChunk[]>([]);
   const [renderDrops, setRenderDrops] = useState<RenderDrop[]>([]);
+  const [renderCrops, setRenderCrops] = useState<RenderCrop[]>([]);
   const position = useRef(new THREE.Vector3(...initialPlayer.position)),
     velocity = useRef(new THREE.Vector3()),
     yaw = useRef(initialPlayer.rotation[0]),
@@ -633,10 +917,12 @@ function WorldRuntime({
     selected = useRef(initialPlayer.selectedSlot),
     health = useRef(initialPlayer.health),
     hunger = useRef(initialPlayer.hunger),
+    oxygen = useRef(20),
     dead = useRef(false);
   const quest = useRef(normalizeNexusQuestState(initialPlayer.quest)),
     questMessage = useRef("Nexus 信標已同步：尋找節點並修復它們。"),
-    nexusNodes = useMemo(() => getNexusNodes(world.seed), [world.seed]);
+    nexusNodes = useMemo(() => getNexusNodes(world.seed), [world.seed]),
+    landmarks = useMemo(() => getWorldLandmarks(world.seed), [world.seed]);
   const timeOfDay = useRef(world.timeOfDay),
     hit = useRef<RaycastHit | null>(null),
     accumulator = useRef(0),
@@ -646,6 +932,13 @@ function WorldRuntime({
     fpsTime = useRef(0),
     fps = useRef(0),
     saveTimer = useRef(0),
+    questTravelTimer = useRef(0),
+    questEventSequence = useRef(0),
+    lastQuestPosition = useRef(position.current.clone()),
+    currentBiome = useRef(
+      getBiomeAt(world.seed, position.current.x, position.current.z),
+    ),
+    currentWeather = useRef<WeatherType>("clear"),
     audio = useRef<AudioContext | null>(null);
   const sun = useRef<THREE.DirectionalLight>(null);
   const safeSpawn = useMemo<readonly [number, number, number]>(
@@ -682,6 +975,13 @@ function WorldRuntime({
             (entity): entity is DroppedItemEntity =>
               entity.kind === "dropped-item",
           )
+          .map((entity) => ({ ...entity, key })),
+      ).flat(),
+    );
+    setRenderCrops(
+      Array.from(chunks.current, ([key, chunk]) =>
+        chunk.entities
+          .filter((entity): entity is CropEntity => entity.kind === "crop")
           .map((entity) => ({ ...entity, key })),
       ).flat(),
     );
@@ -789,6 +1089,26 @@ function WorldRuntime({
     [settings.sfx],
   );
 
+  const emitQuestEvent = useCallback(
+    (event: Omit<GameplayEvent, "id"> & { id?: string }) => {
+      const result = applyGameplayEvent(quest.current, {
+        ...event,
+        id:
+          event.id ??
+          `${world.id}:${Date.now()}:${++questEventSequence.current}`,
+      });
+      quest.current = result.state;
+      if (result.completedLevel) {
+        const next = getCurrentQuest(result.state);
+        questMessage.current = result.state.postGame
+          ? "NEXUS NETWORK RESTORED · 世界進入永久 post-game 沙盒。"
+          : `Level ${result.completedLevel} 完成 · Level ${next.level} ${next.title} 已解鎖。`;
+        beep(740);
+      }
+    },
+    [beep, world.id],
+  );
+
   const changeBlock = useCallback(
     (button: number) => {
       if (!document.pointerLockElement || dead.current) return;
@@ -812,6 +1132,10 @@ function WorldRuntime({
           BlockId.Air,
         );
         chunk.dirty = true;
+        emitQuestEvent({
+          type: "mine",
+          key: getBlockDefinition(current.blockId).key,
+        });
         if (world.gameMode === "survival") {
           for (const loot of getBlockLoot(current.blockId))
             chunk.entities.push({
@@ -833,6 +1157,46 @@ function WorldRuntime({
       } else if (button === 2) {
         const stack = inventory.current[selected.current];
         if (!stack) return;
+        if (stack.blockId === BlockId.FieldSeed) {
+          const target = current.previous;
+          const soil = lookup(target.x, target.y - 1, target.z);
+          if (soil !== BlockId.Loam && soil !== BlockId.Verdant) return;
+          const coordinate = worldToChunk(target.x, target.z),
+            chunk = chunks.current.get(chunkKey(coordinate.x, coordinate.z));
+          if (!chunk) return;
+          chunk.entities.push({
+            id: crypto.randomUUID(),
+            kind: "crop",
+            cropId: "sungrain",
+            position: [target.x + 0.5, target.y, target.z + 0.5],
+            plantedAt: new Date().toISOString(),
+            growthSeconds: 120,
+          });
+          chunk.dirty = true;
+          inventory.current =
+            removeFromInventory(inventory.current, selected.current, 1) ??
+            inventory.current;
+          emitQuestEvent({ type: "place", key: "crop" });
+          publishChunks();
+          beep(285);
+          return;
+        }
+        if (
+          stack.blockId === BlockId.TrailRation ||
+          stack.blockId === BlockId.MeadowMilk
+        ) {
+          if (hunger.current >= 20) return;
+          inventory.current =
+            removeFromInventory(inventory.current, selected.current, 1) ??
+            inventory.current;
+          hunger.current = Math.min(
+            20,
+            hunger.current + (stack.blockId === BlockId.TrailRation ? 8 : 3),
+          );
+          beep(330);
+          return;
+        }
+        if (!getBlockDefinition(stack.blockId).solid) return;
         if (
           !canPlaceBlock(
             current.previous,
@@ -860,6 +1224,10 @@ function WorldRuntime({
           stack.blockId,
         );
         chunk.dirty = true;
+        emitQuestEvent({
+          type: "place",
+          key: getBlockDefinition(stack.blockId).key,
+        });
         if (world.gameMode === "survival")
           inventory.current =
             removeFromInventory(inventory.current, selected.current, 1) ??
@@ -868,7 +1236,7 @@ function WorldRuntime({
         beep(196);
       }
     },
-    [beep, lookup, publishChunks, requestChunk, world.gameMode],
+    [beep, emitQuestEvent, lookup, publishChunks, requestChunk, world.gameMode],
   );
 
   const repairNearestNode = useCallback(() => {
@@ -900,11 +1268,55 @@ function WorldRuntime({
     }
     quest.current = repaired.state;
     inventory.current = repaired.inventory;
-    questMessage.current = repaired.state.completedAt
-      ? "Nexus 主線完成：三座節點已恢復連線。"
-      : `${nearest.node.name} 已修復。尋找下一座節點。`;
+    emitQuestEvent({ type: "repairNode", key: nearest.node.id });
+    questMessage.current = `${nearest.node.name} 已修復。Nexus Journey 已記錄進度。`;
     beep(660);
-  }, [beep, nexusNodes]);
+  }, [beep, emitQuestEvent, nexusNodes]);
+
+  const harvestNearestCrop = useCallback(() => {
+    for (const chunk of chunks.current.values()) {
+      const crop = chunk.entities
+        .filter((entity): entity is CropEntity => entity.kind === "crop")
+        .map((entity) => ({
+          entity,
+          distance: Math.hypot(
+            entity.position[0] - position.current.x,
+            entity.position[1] - position.current.y,
+            entity.position[2] - position.current.z,
+          ),
+        }))
+        .filter((entry) => entry.distance <= 2.4)
+        .sort((a, b) => a.distance - b.distance)[0]?.entity;
+      if (!crop) continue;
+      if (!isCropMature(crop)) {
+        questMessage.current = `日穗尚未成熟（階段 ${cropGrowthStage(crop) + 1}/4）。`;
+        return;
+      }
+      const grain = addToInventoryWithRemainder(
+        inventory.current,
+        BlockId.Sungrain,
+        2,
+      );
+      const seeds = addToInventoryWithRemainder(
+        grain.inventory,
+        BlockId.FieldSeed,
+        2,
+      );
+      if (grain.remaining > 0 || seeds.remaining > 0) {
+        questMessage.current = "背包已滿，無法收成。";
+        return;
+      }
+      inventory.current = seeds.inventory;
+      chunk.entities = chunk.entities.filter((entity) => entity.id !== crop.id);
+      chunk.dirty = true;
+      publishChunks();
+      emitQuestEvent({ type: "harvest", key: "crop", amount: 1 });
+      questMessage.current = "收成日穗與新種子。";
+      beep(590);
+      return;
+    }
+    questMessage.current = "附近沒有可收成的作物。";
+  }, [beep, emitQuestEvent, publishChunks]);
 
   const save = useCallback(async () => {
     onSaveStatus("saving");
@@ -1002,6 +1414,19 @@ function WorldRuntime({
         event.preventDefault();
         repairNearestNode();
       }
+      if (event.code === "KeyJ") {
+        event.preventDefault();
+        document.exitPointerLock();
+        window.dispatchEvent(new CustomEvent("fangyu-journal"));
+      }
+      if (event.code === "KeyR") {
+        event.preventDefault();
+        window.dispatchEvent(new CustomEvent("fangyu-creature-interact"));
+      }
+      if (event.code === "KeyH") {
+        event.preventDefault();
+        harvestNearestCrop();
+      }
       if (event.code === "F3") {
         event.preventDefault();
         window.dispatchEvent(new CustomEvent("fangyu-debug"));
@@ -1028,8 +1453,18 @@ function WorldRuntime({
       const result = craftInventory(inventory.current, recipe);
       if (result) {
         inventory.current = result;
+        emitQuestEvent({ type: "craft", key: recipe.id });
         beep(440);
       }
+    };
+    const onTutorial = (event: Event) => {
+      const action = (event as CustomEvent<"skip" | "complete">).detail;
+      quest.current = {
+        ...quest.current,
+        tutorialCompleted: action === "complete",
+        tutorialSkipped: action === "skip",
+      };
+      void save();
     };
     const onRespawn = () => {
       position.current.set(...safeSpawn);
@@ -1044,6 +1479,7 @@ function WorldRuntime({
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mousedown", onMouseDown);
     window.addEventListener("fangyu-craft", onCraft);
+    window.addEventListener("fangyu-tutorial", onTutorial);
     window.addEventListener("fangyu-respawn", onRespawn);
     return () => {
       document.removeEventListener("pointerlockchange", onLock);
@@ -1052,6 +1488,7 @@ function WorldRuntime({
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("fangyu-craft", onCraft);
+      window.removeEventListener("fangyu-tutorial", onTutorial);
       window.removeEventListener("fangyu-respawn", onRespawn);
     };
   }, [
@@ -1063,6 +1500,9 @@ function WorldRuntime({
     setPaused,
     settings.sensitivity,
     repairNearestNode,
+    harvestNearestCrop,
+    emitQuestEvent,
+    save,
   ]);
 
   useEffect(() => {
@@ -1122,18 +1562,44 @@ function WorldRuntime({
         const length = Math.hypot(forward, strafe) || 1,
           sprint =
             keys.current.has("ShiftLeft") || keys.current.has("ShiftRight"),
-          speed =
-            (sprint ? 7.2 : 4.5) * (keys.current.has("ControlLeft") ? 0.45 : 1);
+          inWater =
+            lookup(
+              Math.floor(position.current.x),
+              Math.floor(position.current.y + 0.8),
+              Math.floor(position.current.z),
+            ) === BlockId.Water,
+          speed = inWater
+            ? 2.7
+            : (sprint ? 7.2 : 4.5) *
+              (keys.current.has("ControlLeft") ? 0.45 : 1);
         const sin = Math.sin(yaw.current),
           cos = Math.cos(yaw.current);
         velocity.current.x = ((-sin * forward + cos * strafe) / length) * speed;
         velocity.current.z = ((-cos * forward - sin * strafe) / length) * speed;
-        if (keys.current.has("Space") && grounded.current) {
+        if (inWater) {
+          velocity.current.y *= 0.82;
+          velocity.current.y +=
+            (Number(keys.current.has("Space")) -
+              Number(keys.current.has("ControlLeft"))) *
+            7.5 *
+            dt;
+        } else if (keys.current.has("Space") && grounded.current) {
           velocity.current.y = 8;
           grounded.current = false;
           beep(260);
         }
-        velocity.current.y -= 22 * dt;
+        velocity.current.y -= (inWater ? 3.2 : 22) * dt;
+        const headUnderwater =
+          lookup(
+            Math.floor(position.current.x),
+            Math.floor(position.current.y + 1.62),
+            Math.floor(position.current.z),
+          ) === BlockId.Water;
+        oxygen.current = headUnderwater
+          ? Math.max(0, oxygen.current - dt * 1.2)
+          : Math.min(20, oxygen.current + dt * 5);
+        if (oxygen.current <= 0 && world.gameMode === "survival")
+          health.current = Math.max(0, health.current - dt * 0.8);
         const oldFall = velocity.current.y;
         for (const axis of ["x", "z", "y"] as const) {
           const amount = velocity.current[axis] * dt;
@@ -1167,6 +1633,61 @@ function WorldRuntime({
         accumulator.current -= dt;
       }
     }
+    questTravelTimer.current += delta;
+    if (questTravelTimer.current >= 1) {
+      const travelled = position.current.distanceTo(lastQuestPosition.current);
+      if (travelled > 0.15)
+        emitQuestEvent({ type: "travel", amount: travelled });
+      lastQuestPosition.current.copy(position.current);
+      questTravelTimer.current = 0;
+      const biome = getBiomeAt(
+        world.seed,
+        position.current.x,
+        position.current.z,
+      );
+      currentBiome.current = biome;
+      currentWeather.current = getWeatherAt(
+        world.seed,
+        timeOfDay.current,
+        position.current.x,
+        position.current.z,
+      );
+      if (!quest.current.discoveredBiomes.includes(biome.id)) {
+        quest.current = {
+          ...quest.current,
+          discoveredBiomes: [...quest.current.discoveredBiomes, biome.id],
+        };
+        emitQuestEvent({
+          id: `biome:${biome.id}`,
+          type: "discoverBiome",
+          key: biome.id,
+        });
+        questMessage.current = `發現生態系：${biome.name}`;
+      }
+      for (const landmark of landmarks) {
+        if (
+          quest.current.discoveredStructures.includes(landmark.id) ||
+          Math.hypot(
+            position.current.x - landmark.x,
+            position.current.z - landmark.z,
+          ) > 20
+        )
+          continue;
+        quest.current = {
+          ...quest.current,
+          discoveredStructures: [
+            ...quest.current.discoveredStructures,
+            landmark.id,
+          ],
+        };
+        emitQuestEvent({
+          id: `structure:${landmark.id}`,
+          type: "discoverStructure",
+          key: landmark.type,
+        });
+        questMessage.current = `發現地標：${landmark.name}`;
+      }
+    }
     // Item pickup is simulation-rate limited by the HUD cadence, not a React rerender.
     if (lastHud.current > 0.1) {
       let changed = false;
@@ -1190,6 +1711,24 @@ function WorldRuntime({
           inventory.current = picked.inventory;
           if (picked.remaining) remaining.push(picked.remaining);
           if (picked.pickedUp > 0) {
+            const itemKey = getBlockDefinition(entity.itemId).key;
+            emitQuestEvent({
+              type: "collect",
+              key: itemKey,
+              amount: picked.pickedUp,
+              id: `pickup:${entity.id}:${entity.count - (picked.remaining?.count ?? 0)}`,
+            });
+            if (
+              entity.itemId === BlockId.SunShard ||
+              entity.itemId === BlockId.DuskShard ||
+              entity.itemId === BlockId.GlowCrystal
+            )
+              emitQuestEvent({
+                type: "collect",
+                key: "nexus-crystal",
+                amount: picked.pickedUp,
+                id: `pickup-crystal:${entity.id}:${entity.count - (picked.remaining?.count ?? 0)}`,
+              });
             changed = true;
             chunk.dirty = true;
             beep(355);
@@ -1248,6 +1787,9 @@ function WorldRuntime({
         health: health.current,
         hunger: hunger.current,
         grounded: grounded.current,
+        oxygen: oxygen.current,
+        biome: currentBiome.current.name,
+        weather: currentWeather.current,
         time: timeOfDay.current,
         hit: hit.current,
         dead: dead.current,
@@ -1268,6 +1810,97 @@ function WorldRuntime({
       position.current.set(...safeSpawn);
   }, [initialPlayer.position, safeSpawn, spawnY]);
 
+  const spawnWorldDrop = useCallback(
+    (itemId: BlockIdValue, dropPosition: readonly [number, number, number]) => {
+      const coordinate = worldToChunk(dropPosition[0], dropPosition[2]);
+      const chunk = chunks.current.get(chunkKey(coordinate.x, coordinate.z));
+      if (!chunk) return false;
+      chunk.entities.push({
+        id: crypto.randomUUID(),
+        kind: "dropped-item",
+        itemId,
+        count: 1,
+        position: dropPosition,
+        createdAt: new Date().toISOString(),
+      });
+      chunk.dirty = true;
+      publishChunks();
+      return true;
+    },
+    [publishChunks],
+  );
+
+  const obtainAnimalProduct = useCallback(
+    (species: "cow" | "sheep") => {
+      if (species === "cow") {
+        const withoutFlask = consumeInventoryItem(
+          inventory.current,
+          BlockId.EmptyFlask,
+          1,
+        );
+        if (!withoutFlask) {
+          questMessage.current = "需要空野行瓶才能取得牧野乳。";
+          return false;
+        }
+        const filled = addToInventoryWithRemainder(
+          withoutFlask,
+          BlockId.MeadowMilk,
+          1,
+        );
+        if (filled.remaining > 0) return false;
+        inventory.current = filled.inventory;
+        emitQuestEvent({ type: "animalProduct", key: "milk" });
+        questMessage.current = "取得牧野乳。";
+        beep(520);
+        return true;
+      }
+      if (countInventoryItem(inventory.current, BlockId.FiberShears) < 1) {
+        questMessage.current = "需要纖維剪才能取得雲絨。";
+        return false;
+      }
+      const wool = addToInventoryWithRemainder(
+        inventory.current,
+        BlockId.CloudWool,
+        1,
+      );
+      if (wool.remaining > 0) return false;
+      inventory.current = wool.inventory;
+      emitQuestEvent({ type: "animalProduct", key: "wool" });
+      questMessage.current = "取得雲絨；牠會隨時間重新長出毛層。";
+      beep(480);
+      return true;
+    },
+    [beep, emitQuestEvent],
+  );
+
+  const interactNpc = useCallback(
+    (role: string, name: string) => {
+      emitQuestEvent({ type: "interactNPC", key: role });
+      if (role === "trader") {
+        const paid = consumeInventoryItem(inventory.current, BlockId.Dune, 2);
+        if (paid) {
+          const received = addToInventoryWithRemainder(
+            paid,
+            BlockId.FieldSeed,
+            2,
+          );
+          if (received.remaining === 0) {
+            inventory.current = received.inventory;
+            emitQuestEvent({ type: "trade", key: "field-seed" });
+            questMessage.current = `${name}：交易完成，2 星砂換得 2 日穗種子。`;
+            beep(610);
+            return;
+          }
+        }
+        questMessage.current = `${name}：準備 2 星砂並保留背包空間，我能交換日穗種子。`;
+        return;
+      }
+      questMessage.current = `${name}（${role}）：聚落今天也在運作。`;
+      beep(410);
+    },
+    [beep, emitQuestEvent],
+  );
+
   return (
     <>
       <hemisphereLight intensity={0.45} color="#bdefff" groundColor="#18201c" />
@@ -1276,105 +1909,484 @@ function WorldRuntime({
         <ChunkMesh key={`${chunk.key}:${chunk.revision}`} chunk={chunk} />
       ))}
       <DroppedItemField drops={renderDrops} />
+      <CropField crops={renderCrops} />
       <SelectionOutline hit={hit.current} />
       <NexusNodeField
         nodes={nexusNodes}
         repairedNodeIds={quest.current.repairedNodeIds}
       />
       <CreatureField
+        seed={world.seed}
         player={position}
         paused={paused}
-        passiveY={terrainHeight(world.seed, 5, 5) + 1}
-        hostileY={terrainHeight(world.seed, -6, -6) + 1}
+        onDrop={spawnWorldDrop}
+        onProduct={obtainAnimalProduct}
         damage={(amount) => {
           if (world.gameMode === "survival")
             health.current = Math.max(0, health.current - amount);
         }}
+      />
+      <NpcVillageField
+        village={landmarks.find((landmark) => landmark.type === "village")!}
+        seed={world.seed}
+        player={position}
+        paused={paused}
+        timeOfDay={timeOfDay}
+        onInteract={interactNpc}
+      />
+      <AtmosphereField
+        seed={world.seed}
+        player={position}
+        timeOfDay={timeOfDay}
       />
     </>
   );
 }
 
 function CreatureField({
+  seed,
   player,
   paused,
-  passiveY,
-  hostileY,
+  onDrop,
+  onProduct,
   damage,
 }: {
+  seed: string;
   player: RefObject<THREE.Vector3>;
   paused: boolean;
-  passiveY: number;
-  hostileY: number;
+  onDrop: (
+    itemId: BlockIdValue,
+    position: readonly [number, number, number],
+  ) => boolean;
+  onProduct: (species: "cow" | "sheep") => boolean;
   damage: (amount: number) => void;
 }) {
   const { camera } = useThree();
-  const passive = useRef<THREE.Mesh>(null),
-    hostile = useRef<THREE.Mesh>(null),
-    passiveHealth = useRef(6),
-    hostileHealth = useRef(8),
-    attackClock = useRef(0);
-  const [passiveAlive, setPassiveAlive] = useState(true),
-    [hostileAlive, setHostileAlive] = useState(true);
+  const [, redraw] = useState(0);
+  const creatures = useMemo(() => {
+    const ocean = findBiomeSpot(seed, "ocean");
+    const entries = [
+      ["chicken", 7, 6, 6, "#e6bd57"],
+      ["cow", 11, 4, 12, "#9b6a43"],
+      ["pig", -8, 7, 10, "#d98586"],
+      ["sheep", -11, -5, 8, "#d9e4df"],
+      ["rabbit", 4, -10, 5, "#b89b79"],
+      ["fish", ocean[0], ocean[1], 4, "#48a9c9"],
+      ["riftling", -7, -8, 9, "#7d4ab2"],
+    ] as const;
+    return entries.map(([species, x, z, health, color], index) => ({
+      id: `${species}-${index}`,
+      species,
+      color,
+      health,
+      alive: true,
+      mesh: null as THREE.Group | null,
+      position: new THREE.Vector3(
+        x,
+        species === "fish" ? SEA_LEVEL - 1.2 : terrainHeight(seed, x, z) + 0.55,
+        z,
+      ),
+      heading: index * 0.83,
+      think: 1.4 + index * 0.6,
+      productReadyAt: 0,
+      eggClock: species === "chicken" ? 70 : Infinity,
+      attackClock: 0,
+    }));
+  }, [seed]);
 
   useEffect(() => {
     const attack = () => {
-      const targets = [passive.current, hostile.current].filter(
-        (target): target is THREE.Mesh => Boolean(target?.visible),
-      );
+      const targets = creatures
+        .filter((creature) => creature.alive && creature.mesh)
+        .map((creature) => creature.mesh!);
       const raycaster = new THREE.Raycaster();
       raycaster.far = 4.5;
       raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
-      const target = raycaster.intersectObjects(targets, false)[0]?.object;
-      if (target === passive.current) {
-        passiveHealth.current -= 3;
-        if (passiveHealth.current <= 0) setPassiveAlive(false);
-      }
-      if (target === hostile.current) {
-        hostileHealth.current -= 3;
-        if (hostileHealth.current <= 0) setHostileAlive(false);
-      }
+      const hitObject = raycaster.intersectObjects(targets, true)[0]?.object;
+      const creatureId = hitObject?.userData.creatureId as string | undefined;
+      const target = creatures.find((creature) => creature.id === creatureId);
+      if (!target) return;
+      target.health -= 3;
+      if (target.health > 0) return;
+      target.alive = false;
+      const drop =
+        target.species === "chicken"
+          ? BlockId.SunEgg
+          : target.species === "sheep"
+            ? BlockId.CloudWool
+            : BlockId.TrailRation;
+      onDrop(drop, [target.position.x, target.position.y, target.position.z]);
+      redraw((value) => value + 1);
+    };
+    const interact = () => {
+      const nearest = creatures
+        .filter(
+          (creature) =>
+            creature.alive &&
+            (creature.species === "cow" || creature.species === "sheep"),
+        )
+        .map((creature) => ({
+          creature,
+          distance: creature.position.distanceTo(player.current),
+        }))
+        .sort((a, b) => a.distance - b.distance)[0];
+      if (!nearest || nearest.distance > 3.2) return;
+      const species = nearest.creature.species as "cow" | "sheep";
+      if (performance.now() < nearest.creature.productReadyAt) return;
+      if (onProduct(species))
+        nearest.creature.productReadyAt =
+          performance.now() + (species === "cow" ? 45_000 : 120_000);
     };
     window.addEventListener("fangyu-attack", attack);
-    return () => window.removeEventListener("fangyu-attack", attack);
-  }, [camera]);
+    window.addEventListener("fangyu-creature-interact", interact);
+    return () => {
+      window.removeEventListener("fangyu-attack", attack);
+      window.removeEventListener("fangyu-creature-interact", interact);
+    };
+  }, [camera, creatures, onDrop, onProduct, player]);
   useFrame((_, delta) => {
     if (paused) return;
-    if (passive.current && passiveAlive) {
-      passive.current.position.x = 5 + Math.sin(performance.now() / 1800) * 2;
-      passive.current.rotation.y += delta * 0.4;
-    }
-    if (hostile.current && hostileAlive && hostileHealth.current > 0) {
-      const target = player.current,
-        dx = target.x - hostile.current.position.x,
-        dz = target.z - hostile.current.position.z,
-        distance = Math.hypot(dx, dz);
-      if (distance < 14 && distance > 1) {
-        hostile.current.position.x += (dx / distance) * delta * 1.45;
-        hostile.current.position.z += (dz / distance) * delta * 1.45;
-        hostile.current.lookAt(target.x, hostile.current.position.y, target.z);
+    for (const creature of creatures) {
+      if (!creature.alive || !creature.mesh) continue;
+      const distanceToPlayer = creature.position.distanceTo(player.current);
+      if (distanceToPlayer > 52) {
+        creature.mesh.visible = false;
+        continue;
       }
-      attackClock.current -= delta;
-      if (distance < 1.5 && attackClock.current <= 0) {
-        damage(2);
-        attackClock.current = 1.2;
+      creature.mesh.visible = true;
+      if (creature.species === "fish") {
+        creature.heading += delta * 0.12;
+        creature.position.x += Math.sin(creature.heading) * delta * 0.55;
+        creature.position.z += Math.cos(creature.heading) * delta * 0.55;
+        creature.position.y =
+          SEA_LEVEL - 1.5 + Math.sin(performance.now() / 900) * 0.35;
+      } else if (creature.species === "riftling") {
+        const target = player.current,
+          dx = target.x - creature.position.x,
+          dz = target.z - creature.position.z,
+          distance = Math.hypot(dx, dz);
+        if (distance < 14 && distance > 1) {
+          creature.position.x += (dx / distance) * delta * 1.45;
+          creature.position.z += (dz / distance) * delta * 1.45;
+        }
+        creature.attackClock -= delta;
+        if (distance < 1.5 && creature.attackClock <= 0) {
+          damage(2);
+          creature.attackClock = 1.2;
+        }
+        creature.position.y =
+          terrainHeight(seed, creature.position.x, creature.position.z) + 0.7;
+      } else {
+        creature.think -= delta;
+        if (creature.think <= 0) {
+          creature.heading += 0.8 + Math.sin(performance.now() * 0.00031);
+          creature.think = 2.5 + (creature.id.length % 4);
+        }
+        if (distanceToPlayer < 3.2)
+          creature.heading = Math.atan2(
+            creature.position.x - player.current.x,
+            creature.position.z - player.current.z,
+          );
+        const speed =
+          creature.species === "rabbit"
+            ? 1.45
+            : distanceToPlayer < 3.2
+              ? 1.2
+              : 0.42;
+        creature.position.x += Math.sin(creature.heading) * delta * speed;
+        creature.position.z += Math.cos(creature.heading) * delta * speed;
+        creature.position.y =
+          terrainHeight(seed, creature.position.x, creature.position.z) +
+          (creature.species === "rabbit" ? 0.32 : 0.55);
+        if (creature.species === "rabbit")
+          creature.position.y +=
+            Math.abs(Math.sin(performance.now() / 260)) * 0.35;
+        if (creature.species === "chicken") {
+          creature.eggClock -= delta;
+          if (creature.eggClock <= 0) {
+            if (
+              onDrop(BlockId.SunEgg, [
+                creature.position.x,
+                creature.position.y,
+                creature.position.z,
+              ])
+            )
+              creature.eggClock = 75 + (creature.id.length % 20);
+          }
+        }
       }
+      creature.mesh.position.copy(creature.position);
+      creature.mesh.rotation.y = creature.heading;
     }
   });
   return (
     <group>
-      <mesh ref={passive} visible={passiveAlive} position={[5, passiveY, 5]}>
-        <boxGeometry args={[0.9, 0.75, 1.2]} />
-        <meshLambertMaterial color="#e7b653" />
-        <mesh position={[0, 0.38, 0.42]}>
-          <boxGeometry args={[0.48, 0.45, 0.45]} />
-          <meshLambertMaterial color="#f6d37d" />
-        </mesh>
-      </mesh>
-      <mesh ref={hostile} visible={hostileAlive} position={[-6, hostileY, -6]}>
-        <boxGeometry args={[0.8, 1.35, 0.8]} />
-        <meshLambertMaterial color="#7d4ab2" emissive="#27103b" />
-      </mesh>
+      {creatures.map((creature) => (
+        <group
+          key={creature.id}
+          ref={(node) => {
+            creature.mesh = node;
+          }}
+          visible={creature.alive}
+          position={creature.position}
+        >
+          <mesh userData={{ creatureId: creature.id }}>
+            <boxGeometry
+              args={
+                creature.species === "rabbit"
+                  ? [0.55, 0.5, 0.7]
+                  : creature.species === "fish"
+                    ? [0.75, 0.35, 0.35]
+                    : creature.species === "chicken"
+                      ? [0.65, 0.65, 0.8]
+                      : creature.species === "riftling"
+                        ? [0.8, 1.35, 0.8]
+                        : [1.15, 0.9, 1.5]
+              }
+            />
+            <meshLambertMaterial
+              color={creature.color}
+              emissive={creature.species === "riftling" ? "#27103b" : "#000000"}
+            />
+          </mesh>
+          {creature.species !== "fish" && creature.species !== "riftling" && (
+            <mesh
+              position={[0, creature.species === "rabbit" ? 0.2 : 0.2, 0.58]}
+              userData={{ creatureId: creature.id }}
+            >
+              <boxGeometry args={[0.55, 0.5, 0.5]} />
+              <meshLambertMaterial color={creature.color} />
+            </mesh>
+          )}
+          {creature.species === "rabbit" && (
+            <>
+              <mesh position={[-0.16, 0.55, 0.5]}>
+                <boxGeometry args={[0.13, 0.55, 0.13]} />
+                <meshLambertMaterial color={creature.color} />
+              </mesh>
+              <mesh position={[0.16, 0.55, 0.5]}>
+                <boxGeometry args={[0.13, 0.55, 0.13]} />
+                <meshLambertMaterial color={creature.color} />
+              </mesh>
+            </>
+          )}
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function findBiomeSpot(
+  seed: string,
+  biomeId: string,
+): readonly [number, number] {
+  for (let radius = 32; radius <= 320; radius += 16)
+    for (let step = 0; step < 24; step += 1) {
+      const angle = (step / 24) * Math.PI * 2;
+      const x = Math.round(Math.cos(angle) * radius);
+      const z = Math.round(Math.sin(angle) * radius);
+      if (getBiomeAt(seed, x, z).id === biomeId) return [x, z];
+    }
+  return [160, 160];
+}
+
+function NpcVillageField({
+  village,
+  seed,
+  player,
+  paused,
+  timeOfDay,
+  onInteract,
+}: {
+  village: WorldLandmark;
+  seed: string;
+  player: RefObject<THREE.Vector3>;
+  paused: boolean;
+  timeOfDay: RefObject<number>;
+  onInteract: (role: string, name: string) => void;
+}) {
+  const villagers = useMemo(() => {
+    const definitions = [
+      ["Mira", "farmer", -10, -9, -2, 9, "#71ad56"],
+      ["Tor", "crafter", 10, -8, 3, -2, "#c77b4e"],
+      ["Sela", "trader", -9, 10, 0, 0, "#d5b64d"],
+      ["Ivo", "explorer", 11, 9, 7, 3, "#4e9fc7"],
+      ["Nara", "nexus-researcher", 11, 9, -5, -3, "#a46dcc"],
+    ] as const;
+    return definitions.map(([name, role, hx, hz, wx, wz, color], index) => {
+      const home = new THREE.Vector3(
+        village.x + hx,
+        terrainHeight(seed, village.x + hx, village.z + hz) + 1,
+        village.z + hz,
+      );
+      const work = new THREE.Vector3(
+        village.x + wx,
+        terrainHeight(seed, village.x + wx, village.z + wz) + 1,
+        village.z + wz,
+      );
+      return {
+        id: `settler-${index}`,
+        name,
+        role,
+        color,
+        home,
+        work,
+        position: home.clone(),
+        mesh: null as THREE.Group | null,
+      };
+    });
+  }, [seed, village.x, village.z]);
+
+  useEffect(() => {
+    const interact = () => {
+      const nearest = villagers
+        .map((villager) => ({
+          villager,
+          distance: villager.position.distanceTo(player.current),
+        }))
+        .sort((a, b) => a.distance - b.distance)[0];
+      if (nearest && nearest.distance <= 3.2)
+        onInteract(nearest.villager.role, nearest.villager.name);
+    };
+    window.addEventListener("fangyu-creature-interact", interact);
+    return () =>
+      window.removeEventListener("fangyu-creature-interact", interact);
+  }, [onInteract, player, villagers]);
+
+  useFrame((_, delta) => {
+    if (paused) return;
+    const day = timeOfDay.current >= 0.18 && timeOfDay.current <= 0.72;
+    for (const [index, villager] of villagers.entries()) {
+      if (!villager.mesh) continue;
+      const distance = villager.position.distanceTo(player.current);
+      villager.mesh.visible = distance < 72;
+      if (distance >= 72) continue;
+      const target = day ? villager.work : villager.home;
+      const sway = new THREE.Vector3(
+        Math.sin(performance.now() / 2400 + index) * 1.6,
+        0,
+        Math.cos(performance.now() / 2700 + index) * 1.6,
+      );
+      const destination = target.clone().add(day ? sway : new THREE.Vector3());
+      const direction = destination.sub(villager.position);
+      if (direction.lengthSq() > 0.12) {
+        direction.normalize();
+        villager.position.addScaledVector(direction, delta * 0.75);
+        villager.position.y =
+          terrainHeight(seed, villager.position.x, villager.position.z) + 1;
+        villager.mesh.rotation.y = Math.atan2(direction.x, direction.z);
+      }
+      villager.mesh.position.copy(villager.position);
+    }
+  });
+
+  return (
+    <group>
+      {villagers.map((villager) => (
+        <group
+          key={villager.id}
+          ref={(node) => {
+            villager.mesh = node;
+          }}
+          position={villager.position}
+        >
+          <mesh position={[0, 0.72, 0]}>
+            <boxGeometry args={[0.58, 1.05, 0.48]} />
+            <meshLambertMaterial color={villager.color} />
+          </mesh>
+          <mesh position={[0, 1.48, 0]}>
+            <boxGeometry args={[0.52, 0.48, 0.48]} />
+            <meshLambertMaterial color="#c99872" />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function AtmosphereField({
+  seed,
+  player,
+  timeOfDay,
+}: {
+  seed: string;
+  player: RefObject<THREE.Vector3>;
+  timeOfDay: RefObject<number>;
+}) {
+  const stars = useRef<THREE.Points>(null);
+  const precipitation = useRef<THREE.InstancedMesh>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const drops = useRef(
+    Array.from({ length: 72 }, (_, index) => ({
+      x: Math.sin(index * 91.17) * 18,
+      y: 2 + ((index * 7.13) % 18),
+      z: Math.cos(index * 47.31) * 18,
+    })),
+  );
+  const starPositions = useMemo(() => {
+    const values = new Float32Array(180 * 3);
+    for (let index = 0; index < 180; index += 1) {
+      const angle = index * 2.399;
+      const height = 45 + ((index * 17) % 35);
+      values[index * 3] = Math.cos(angle) * height;
+      values[index * 3 + 1] = 28 + ((index * 29) % 48);
+      values[index * 3 + 2] = Math.sin(angle) * height;
+    }
+    return values;
+  }, []);
+  useFrame((_, delta) => {
+    const time = timeOfDay.current;
+    if (stars.current) {
+      stars.current.visible = time < 0.09 || time > 0.66;
+      stars.current.position.set(player.current.x, 0, player.current.z);
+    }
+    if (!precipitation.current) return;
+    const weather = getWeatherAt(
+      seed,
+      time,
+      player.current.x,
+      player.current.z,
+    );
+    precipitation.current.visible = weather !== "clear";
+    if (weather === "clear") return;
+    drops.current.forEach((drop, index) => {
+      drop.y -=
+        delta * (weather === "rain" ? 14 : weather === "snow" ? 2.3 : 0.4);
+      if (drop.y < -1) drop.y = 20;
+      dummy.position.set(
+        player.current.x + drop.x,
+        player.current.y + drop.y,
+        player.current.z + drop.z,
+      );
+      dummy.scale.set(
+        weather === "fog" ? 2.5 : weather === "snow" ? 0.12 : 0.045,
+        weather === "rain" ? 1.2 : weather === "fog" ? 0.2 : 0.12,
+        weather === "fog" ? 2.5 : weather === "snow" ? 0.12 : 0.045,
+      );
+      dummy.updateMatrix();
+      precipitation.current!.setMatrixAt(index, dummy.matrix);
+    });
+    precipitation.current.instanceMatrix.needsUpdate = true;
+  });
+  return (
+    <group>
+      <points ref={stars} frustumCulled={false}>
+        <bufferGeometry>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[starPositions, 3]}
+          />
+        </bufferGeometry>
+        <pointsMaterial color="#d8f4ff" size={0.42} sizeAttenuation />
+      </points>
+      <instancedMesh
+        ref={precipitation}
+        args={[undefined, undefined, drops.current.length]}
+        frustumCulled={false}
+      >
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial color="#b9dce8" transparent opacity={0.55} />
+      </instancedMesh>
     </group>
   );
 }

@@ -142,6 +142,15 @@ export function GameSettings() {
         >
           {saved ? "已儲存 ✓" : "儲存設定"}
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            localStorage.setItem("fangyu-replay-tutorial", "1");
+            window.location.href = "/play";
+          }}
+        >
+          Replay Tutorial（下次進入世界播放）
+        </button>
       </section>
     </div>
   );

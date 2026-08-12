@@ -10,17 +10,27 @@ import {
   collidesWithWorld,
   craftInventory,
   GAME_RECIPES,
+  BIOMES,
   generateChunk,
   getChunkBlock,
+  getBiomeAt,
   playerAabb,
   raycastVoxels,
   setChunkBlock,
   terrainHeight,
   getBlockLoot,
   pickupDroppedItem,
+  cropGrowthStage,
+  isCropMature,
   countInventoryItem,
   createNexusQuestState,
+  applyGameplayEvent,
+  getCurrentQuest,
+  MAIN_QUESTS,
+  normalizeNexusQuestState,
   getNexusNodes,
+  getWorldLandmarks,
+  getWeatherAt,
   repairNexusNode,
   voxelIndex,
   worldToChunk,
@@ -28,6 +38,15 @@ import {
 } from "./index";
 
 describe("voxel world", () => {
+  it("generates all ten deterministic visual biome families", () => {
+    const discovered = new Set<string>();
+    for (let z = -1800; z <= 1800; z += 48)
+      for (let x = -1800; x <= 1800; x += 48)
+        discovered.add(getBiomeAt("biome-test", x, z).id);
+    expect(discovered).toEqual(new Set(BIOMES.map((biome) => biome.id)));
+    expect(getBiomeAt("biome-test", 0, 0).id).toBe("plains");
+  });
+
   it("generates deterministic chunks and seed-specific terrain", () => {
     const first = generateChunk("aurora-42", -2, 3);
     const second = generateChunk("aurora-42", -2, 3);
@@ -35,6 +54,31 @@ describe("voxel world", () => {
     expect(terrainHeight("aurora-42", 80, -21)).not.toBe(
       terrainHeight("different", 80, -21),
     );
+  });
+
+  it("places deterministic villages and exploration landmarks", () => {
+    const landmarks = getWorldLandmarks("settlement-seed");
+    expect(landmarks).toEqual(getWorldLandmarks("settlement-seed"));
+    expect(landmarks.map((entry) => entry.type)).toEqual([
+      "village",
+      "abandoned-home",
+      "camp",
+      "ruin",
+      "mine",
+      "nexus-tower",
+    ]);
+    const village = landmarks[0]!;
+    const coordinate = worldToChunk(village.x, village.z);
+    const chunk = generateChunk("settlement-seed", coordinate.x, coordinate.z);
+    expect(Array.from(chunk.blocks)).toContain(BlockId.Timber);
+  });
+
+  it("keeps weather biome appropriate", () => {
+    const seed = "weather-seed";
+    for (let time = 0; time < 1; time += 0.02) {
+      const weather = getWeatherAt(seed, time, 0, 0);
+      expect(["clear", "rain", "fog", "snow"]).toContain(weather);
+    }
   });
 
   it("converts negative world coordinates consistently", () => {
@@ -83,6 +127,18 @@ describe("voxel world", () => {
     expect(mesh.positions).toBeInstanceOf(Float32Array);
     expect(mesh.indices).toBeInstanceOf(Uint32Array);
   });
+
+  it("meshes visible water while keeping it non-solid", () => {
+    const chunk = generateChunk("water-mesh", 0, 0);
+    chunk.blocks.fill(BlockId.Air);
+    setChunkBlock(chunk, 4, 10, 4, BlockId.Water);
+    expect(buildChunkMesh(chunk).triangles).toBe(12);
+    expect(
+      collidesWithWorld(playerAabb([4.5, 10, 4.5]), (x, y, z) =>
+        x === 4 && y === 10 && z === 4 ? BlockId.Water : BlockId.Air,
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("inventory and crafting", () => {
@@ -93,18 +149,26 @@ describe("inventory and crafting", () => {
   });
 
   it("crafts only when ingredients exist", () => {
+    const recipe = GAME_RECIPES.find((entry) => entry.id === "timber-to-loam")!;
     const inventory = addToInventory(Array(9).fill(null), BlockId.Timber, 1);
-    const result = craftInventory(inventory, GAME_RECIPES[0]!);
+    const result = craftInventory(inventory, recipe);
     expect(
       result?.some(
         (stack) => stack?.blockId === BlockId.Loam && stack.count === 4,
       ),
     ).toBe(true);
-    expect(craftInventory(Array(9).fill(null), GAME_RECIPES[0]!)).toBeNull();
+    expect(craftInventory(Array(9).fill(null), recipe)).toBeNull();
   });
 });
 
 describe("drop and pickup persistence primitives", () => {
+  it("uses the shared loot pipeline for renewable field seeds", () => {
+    expect(getBlockLoot(BlockId.Canopy)).toContainEqual({
+      itemId: BlockId.FieldSeed,
+      count: 1,
+    });
+  });
+
   it("generates distinct yellow and purple crystal loot", () => {
     expect(getBlockLoot(BlockId.SunShardOre)).toEqual([
       { itemId: BlockId.SunShard, count: 1 },
@@ -142,7 +206,98 @@ describe("drop and pickup persistence primitives", () => {
   });
 });
 
+describe("persistent farming", () => {
+  const crop = {
+    id: "crop-1",
+    kind: "crop" as const,
+    cropId: "sungrain" as const,
+    position: [1, 2, 3] as const,
+    plantedAt: "2026-01-01T00:00:00.000Z",
+    growthSeconds: 120,
+  };
+  it("calculates offline crop growth from its saved timestamp", () => {
+    expect(cropGrowthStage(crop, Date.parse(crop.plantedAt) + 31_000)).toBe(1);
+    expect(isCropMature(crop, Date.parse(crop.plantedAt) + 121_000)).toBe(true);
+  });
+});
+
 describe("Nexus world quest", () => {
+  it("defines fifty sequential main levels without skipping prerequisites", () => {
+    expect(MAIN_QUESTS).toHaveLength(50);
+    expect(MAIN_QUESTS[0]?.prerequisites).toEqual([]);
+    expect(MAIN_QUESTS[49]?.prerequisites).toEqual(["main-49"]);
+  });
+
+  it("only unlocks the next level and ignores duplicate gameplay events", () => {
+    const initial = createNexusQuestState();
+    const first = applyGameplayEvent(initial, {
+      id: "walk-1",
+      type: "travel",
+      amount: 8,
+    });
+    expect(first.completedLevel).toBe(1);
+    expect(first.state.currentQuestLevel).toBe(2);
+    expect(first.state.completedQuestIds).toEqual(["main-01"]);
+    expect(first.state.completedQuestIds).not.toContain("main-03");
+
+    const duplicate = applyGameplayEvent(first.state, {
+      id: "walk-1",
+      type: "travel",
+      amount: 8,
+    });
+    expect(duplicate.state).toEqual(first.state);
+    expect(duplicate.state.claimedRewards).toEqual(["main-01"]);
+  });
+
+  it("preserves objective progress and tutorial skip does not skip level one", () => {
+    const partial = applyGameplayEvent(createNexusQuestState(), {
+      id: "walk-2",
+      type: "travel",
+      amount: 3,
+    }).state;
+    const restored = normalizeNexusQuestState({
+      ...partial,
+      tutorialSkipped: true,
+    });
+    expect(restored.currentQuestLevel).toBe(1);
+    expect(restored.objectiveProgress["main-01:travel"]).toBe(3);
+    expect(getCurrentQuest(restored).id).toBe("main-01");
+  });
+
+  it("enters post-game only after completing level fifty", () => {
+    const finalState = normalizeNexusQuestState({
+      currentQuestLevel: 50,
+      completedQuestIds: MAIN_QUESTS.slice(0, 49).map((quest) => quest.id),
+    });
+    const events = [
+      {
+        id: "signal",
+        type: "activateNexus" as const,
+        key: "world-signal",
+        amount: 3,
+      },
+      {
+        id: "terminal",
+        type: "repairNode" as const,
+        key: "terminal-node",
+        amount: 3,
+      },
+      {
+        id: "core-found",
+        type: "discoverStructure" as const,
+        key: "nexus-core",
+      },
+      { id: "core-on", type: "activateNexus" as const, key: "nexus-core" },
+    ];
+    const completed = events.reduce(
+      (state, event) => applyGameplayEvent(state, event).state,
+      finalState,
+    );
+    expect(completed.postGame).toBe(true);
+    expect(completed.currentQuestLevel).toBe(50);
+    expect(completed.completedQuestIds).toContain("main-50");
+  });
+
   it("keeps portal node locations deterministic for a seed", () => {
     expect(getNexusNodes("quest-seed")).toEqual(getNexusNodes("quest-seed"));
     expect(getNexusNodes("quest-seed")).toHaveLength(3);

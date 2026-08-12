@@ -18,7 +18,32 @@ export interface CreatureEntity {
   health: number;
 }
 
-export type WorldEntity = DroppedItemEntity | CreatureEntity;
+export interface CropEntity {
+  id: string;
+  kind: "crop";
+  cropId: "sungrain";
+  position: readonly [number, number, number];
+  plantedAt: string;
+  growthSeconds: number;
+}
+
+export type WorldEntity = DroppedItemEntity | CreatureEntity | CropEntity;
+
+export function cropGrowthStage(
+  crop: CropEntity,
+  now = Date.now(),
+): 0 | 1 | 2 | 3 {
+  const age = Math.max(0, now - Date.parse(crop.plantedAt)) / 1000;
+  return Math.min(3, Math.floor((age / crop.growthSeconds) * 4)) as
+    | 0
+    | 1
+    | 2
+    | 3;
+}
+
+export function isCropMature(crop: CropEntity, now = Date.now()): boolean {
+  return cropGrowthStage(crop, now) === 3;
+}
 
 export function pickupDroppedItem(
   inventory: Inventory,

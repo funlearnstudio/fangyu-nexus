@@ -13,6 +13,15 @@ export const BlockId = {
   DuskShardOre: 11,
   SunShard: 12,
   DuskShard: 13,
+  SunEgg: 14,
+  EmptyFlask: 15,
+  MeadowMilk: 16,
+  CloudWool: 17,
+  FieldSeed: 18,
+  Sungrain: 19,
+  TrailRation: 20,
+  TrailTool: 21,
+  FiberShears: 22,
 } as const;
 
 export type BlockIdValue = (typeof BlockId)[keyof typeof BlockId];
@@ -189,6 +198,105 @@ export const BLOCKS: readonly BlockDefinition[] = [
     lootTableId: "item:dusk-shard",
     metadataSchema: "none",
   },
+  {
+    id: BlockId.SunEgg,
+    key: "sun-egg",
+    name: "晨光蛋",
+    color: [0.94, 0.86, 0.62],
+    solid: false,
+    transparent: true,
+    hardness: 0.2,
+    drop: BlockId.SunEgg,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.EmptyFlask,
+    key: "empty-flask",
+    name: "空野行瓶",
+    color: [0.55, 0.75, 0.78],
+    solid: false,
+    transparent: true,
+    hardness: 0.4,
+    drop: BlockId.EmptyFlask,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.MeadowMilk,
+    key: "meadow-milk",
+    name: "牧野乳",
+    color: [0.96, 0.94, 0.8],
+    solid: false,
+    transparent: true,
+    hardness: 0.3,
+    drop: BlockId.MeadowMilk,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.CloudWool,
+    key: "cloud-wool",
+    name: "雲絨",
+    color: [0.83, 0.88, 0.9],
+    solid: true,
+    transparent: false,
+    hardness: 0.4,
+    drop: BlockId.CloudWool,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.FieldSeed,
+    key: "field-seed",
+    name: "日穗種子",
+    color: [0.63, 0.68, 0.22],
+    solid: false,
+    transparent: true,
+    hardness: 0.1,
+    drop: BlockId.FieldSeed,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.Sungrain,
+    key: "sungrain",
+    name: "日穗",
+    color: [0.88, 0.68, 0.22],
+    solid: false,
+    transparent: true,
+    hardness: 0.2,
+    drop: BlockId.Sungrain,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.TrailRation,
+    key: "trail-ration",
+    name: "遠行糧",
+    color: [0.73, 0.43, 0.21],
+    solid: false,
+    transparent: true,
+    hardness: 0.2,
+    drop: BlockId.TrailRation,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.TrailTool,
+    key: "trail-tool",
+    name: "拓荒鑿",
+    color: [0.43, 0.68, 0.71],
+    solid: false,
+    transparent: true,
+    hardness: 0.5,
+    drop: BlockId.TrailTool,
+    metadataSchema: "none",
+  },
+  {
+    id: BlockId.FiberShears,
+    key: "fiber-shears",
+    name: "纖維剪",
+    color: [0.72, 0.78, 0.76],
+    solid: false,
+    transparent: true,
+    hardness: 0.5,
+    drop: BlockId.FiberShears,
+    metadataSchema: "none",
+  },
 ] as const;
 
 export interface LootDrop {
@@ -197,6 +305,11 @@ export interface LootDrop {
 }
 export function getBlockLoot(blockId: BlockIdValue): readonly LootDrop[] {
   const block = getBlockDefinition(blockId);
+  if (blockId === BlockId.Canopy)
+    return [
+      { itemId: BlockId.Canopy, count: 1 },
+      { itemId: BlockId.FieldSeed, count: 1 },
+    ];
   return block.drop === null ? [] : [{ itemId: block.drop, count: 1 }];
 }
 
