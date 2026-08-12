@@ -3,6 +3,7 @@ import {
   GENERATION_VERSION,
   type BlockIdValue,
   type ChunkModification,
+  type WorldEntity,
 } from "@fangyu/voxel-engine";
 import { getOwnerId } from "@/lib/server/game-auth";
 import { getChunkDelta, saveChunkDelta } from "@/lib/server/world-store";
@@ -62,10 +63,30 @@ export async function PUT(request: Request, context: Context) {
       entry[0] >= 16 * 64 * 16 ||
       !Number.isInteger(entry[1]) ||
       entry[1] < 0 ||
-      entry[1] > 9
+      entry[1] > 13
     )
       return NextResponse.json({ error: "invalid_delta" }, { status: 400 });
     modifiedBlocks.push([entry[0], entry[1] as BlockIdValue]);
+  }
+  if (!Array.isArray(body.entities) || body.entities.length > 128)
+    return NextResponse.json({ error: "invalid_entities" }, { status: 400 });
+  const entities: WorldEntity[] = [];
+  for (const entity of body.entities) {
+    if (
+      !entity ||
+      typeof entity !== "object" ||
+      (entity as { kind?: unknown }).kind !== "dropped-item" ||
+      typeof (entity as { id?: unknown }).id !== "string" ||
+      !Number.isInteger((entity as { itemId?: unknown }).itemId) ||
+      !Number.isInteger((entity as { count?: unknown }).count) ||
+      (entity as { count: number }).count < 1 ||
+      (entity as { count: number }).count > 64 ||
+      !Array.isArray((entity as { position?: unknown }).position) ||
+      (entity as { position: unknown[] }).position.length !== 3 ||
+      !(entity as { position: unknown[] }).position.every(Number.isFinite)
+    )
+      return NextResponse.json({ error: "invalid_entity" }, { status: 400 });
+    entities.push(entity as WorldEntity);
   }
   const result = await saveChunkDelta(
     ownerId,
@@ -76,7 +97,7 @@ export async function PUT(request: Request, context: Context) {
       generationVersion: GENERATION_VERSION,
       chunkVersion: Number(body.chunkVersion) || 1,
       modifiedBlocks,
-      entities: [],
+      entities,
       revision: Number(body.revision) || 0,
     },
     typeof body.expectedRevision === "number"
