@@ -25,6 +25,36 @@ export function nextSwimmingVelocityY(
   return damped - 3.2 * dt;
 }
 
+/**
+ * Resolve the small, deliberate step a swimmer needs at a shoreline. This is
+ * standard step collision, not a teleport: it only succeeds when the target
+ * has solid ground beneath it, headroom for the full player AABB, and is no
+ * more than one voxel above the current feet.
+ */
+export function findWaterExitStep(
+  position: readonly [number, number, number],
+  crouching: boolean,
+  lookup: WorldBlockLookup,
+  maxStep = 1.05,
+): number | null {
+  for (let step = 0.05; step <= maxStep + 0.001; step += 0.05) {
+    const candidate: readonly [number, number, number] = [
+      position[0],
+      position[1] + step,
+      position[2],
+    ];
+    if (collidesWithWorld(playerAabb(candidate, crouching), lookup)) continue;
+    const groundY = Math.floor(candidate[1] - 0.02);
+    if (
+      getBlockDefinition(
+        lookup(Math.floor(candidate[0]), groundY, Math.floor(candidate[2])),
+      ).solid
+    )
+      return step;
+  }
+  return null;
+}
+
 export function raycastVoxels(
   lookup: WorldBlockLookup,
   origin: readonly [number, number, number],

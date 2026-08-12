@@ -19,6 +19,7 @@ import {
   miningSeconds,
   startProcessor,
   finishProcessor,
+  findWaterExitStep,
   collectProcessorOutput,
   isPersistableWorldEntity,
   craftInventory,
@@ -208,6 +209,19 @@ describe("voxel world", () => {
       -3.6,
     );
     expect(nextSwimmingVelocityY(0, false, false, 1 / 60)).toBeLessThan(0);
+  });
+
+  it("resolves a one-block water-to-land step repeatedly without creating a collision wall", () => {
+    const shoreline = (x: number, y: number, z: number) =>
+      x >= 1 && y === 0 && z === 0 ? BlockId.Slate : BlockId.Water;
+    for (let cycle = 0; cycle < 10; cycle += 1) {
+      expect(
+        findWaterExitStep([1.05, 0, 0.5], false, shoreline),
+      ).not.toBeNull();
+      expect(collidesWithWorld(playerAabb([1.05, 1, 0.5]), shoreline)).toBe(
+        false,
+      );
+    }
   });
 
   it("never creates internal water faces, including across a chunk boundary", () => {

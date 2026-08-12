@@ -44,6 +44,7 @@ import {
   PROCESSING_RECIPES,
   startProcessor,
   finishProcessor,
+  findWaterExitStep,
   collectProcessorOutput,
   transferInventoryStack,
   damageTool,
@@ -2860,15 +2861,36 @@ function WorldRuntime({
         for (const axis of ["x", "z", "y"] as const) {
           const amount = velocity.current[axis] * dt;
           position.current[axis] += amount;
-          if (
-            collidesWithWorld(
-              playerAabb(
-                [position.current.x, position.current.y, position.current.z],
-                keys.current.has("ControlLeft"),
-              ),
-              lookup,
-            )
-          ) {
+          const crouching = keys.current.has("ControlLeft");
+          const blocked = collidesWithWorld(
+            playerAabb(
+              [position.current.x, position.current.y, position.current.z],
+              crouching,
+            ),
+            lookup,
+          );
+          if (blocked) {
+            // A land block at a water boundary is a legitimate 1-block step,
+            // but axis-by-axis collision otherwise treats it as a wall. Only
+            // allow this while actively swimming upward and only onto ground.
+            const shoreStep =
+              axis !== "y" && inWater && keys.current.has("Space")
+                ? findWaterExitStep(
+                    [
+                      position.current.x,
+                      position.current.y,
+                      position.current.z,
+                    ],
+                    crouching,
+                    lookup,
+                  )
+                : null;
+            if (shoreStep !== null) {
+              position.current.y += shoreStep;
+              velocity.current.y = Math.max(velocity.current.y, 2.4);
+              grounded.current = false;
+              continue;
+            }
             position.current[axis] -= amount;
             if (axis === "y") {
               if (velocity.current.y < 0) {
