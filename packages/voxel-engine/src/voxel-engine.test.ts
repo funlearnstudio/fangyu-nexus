@@ -9,6 +9,7 @@ import {
   chunkKey,
   collidesWithWorld,
   isShelterComplete,
+  moveInventoryStack,
   craftInventory,
   GAME_RECIPES,
   BIOMES,
@@ -174,6 +175,24 @@ describe("inventory and crafting", () => {
       ),
     ).toBe(true);
     expect(craftInventory(Array(9).fill(null), recipe)).toBeNull();
+  });
+
+  it("moves, merges and swaps inventory stacks without item loss", () => {
+    const inventory: Inventory = [
+      { blockId: BlockId.Slate, count: 50 },
+      { blockId: BlockId.Slate, count: 20 },
+      { blockId: BlockId.Timber, count: 3 },
+      null,
+    ];
+    const merged = moveInventoryStack(inventory, 1, 0);
+    expect(merged[0]).toEqual({ blockId: BlockId.Slate, count: 64 });
+    expect(merged[1]).toEqual({ blockId: BlockId.Slate, count: 6 });
+    const swapped = moveInventoryStack(merged, 1, 2);
+    expect(swapped[1]).toEqual({ blockId: BlockId.Timber, count: 3 });
+    expect(swapped[2]).toEqual({ blockId: BlockId.Slate, count: 6 });
+    const moved = moveInventoryStack(swapped, 2, 3);
+    expect(moved[2]).toBeNull();
+    expect(moved[3]).toEqual({ blockId: BlockId.Slate, count: 6 });
   });
 });
 
