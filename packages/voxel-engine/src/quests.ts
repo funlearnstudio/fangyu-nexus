@@ -699,7 +699,9 @@ export function applyGameplayEvent(
   input: NexusQuestState,
   event: GameplayEvent,
 ): { state: NexusQuestState; completedLevel?: number } {
-  const state = normalizeNexusQuestState(input);
+  const state = reconcilePersistentQuestProgress(
+    normalizeNexusQuestState(input),
+  );
   if (state.processedEventIds.includes(event.id) || state.postGame)
     return { state };
   const quest = getCurrentQuest(state);
@@ -742,6 +744,48 @@ export function applyGameplayEvent(
       ...(isFinal ? { completedAt: new Date().toISOString() } : {}),
     },
   };
+}
+
+/**
+ * Re-applies durable discoveries to the currently unlocked quest. Players may
+ * explore in any order, so a river found before Riverbound unlocks must still
+ * count without replaying an old gameplay event.
+ */
+export function reconcilePersistentQuestProgress(
+  input: NexusQuestState,
+): NexusQuestState {
+  const state = normalizeNexusQuestState(input);
+  const quest = getCurrentQuest(state);
+  const progress = { ...state.objectiveProgress };
+  for (const entry of quest.objectives) {
+    let durableProgress: number | undefined;
+    if (entry.type === "discoverBiome") {
+      durableProgress = entry.key
+        ? Number(state.discoveredBiomes.includes(entry.key))
+        : state.discoveredBiomes.length;
+    } else if (entry.type === "discoverStructure") {
+      durableProgress = entry.key
+        ? Number(
+            state.discoveredStructures.some(
+              (id) => id === entry.key || id.startsWith(`${entry.key}-`),
+            ),
+          )
+        : state.discoveredStructures.length;
+    } else if (entry.type === "repairNode") {
+      durableProgress = entry.key
+        ? Number(state.repairedNodeIds.includes(entry.key))
+        : state.repairedNodeIds.length;
+    } else if (entry.type === "activateNexus" && !entry.key) {
+      durableProgress = Number(state.beaconClaimed);
+    }
+    if (durableProgress === undefined) continue;
+    const key = `${quest.id}:${entry.id}`;
+    progress[key] = Math.min(
+      entry.target,
+      Math.max(progress[key] ?? 0, durableProgress),
+    );
+  }
+  return { ...state, objectiveProgress: progress };
 }
 
 export function objectiveProgress(
