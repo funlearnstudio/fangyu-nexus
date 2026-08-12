@@ -225,6 +225,43 @@ export function removeFromInventory(
   return next;
 }
 
+export function moveInventoryStack(
+  inventory: Inventory,
+  from: number,
+  to: number,
+  maxStack = 64,
+): Inventory {
+  if (
+    from === to ||
+    !Number.isInteger(from) ||
+    !Number.isInteger(to) ||
+    from < 0 ||
+    to < 0 ||
+    from >= inventory.length ||
+    to >= inventory.length ||
+    !inventory[from]
+  )
+    return inventory.map((stack) => (stack ? { ...stack } : null));
+  const next = inventory.map((stack) => (stack ? { ...stack } : null));
+  const source = next[from]!;
+  const target = next[to];
+  if (!target) {
+    next[to] = source;
+    next[from] = null;
+    return next;
+  }
+  if (target.blockId === source.blockId && target.count < maxStack) {
+    const moved = Math.min(maxStack - target.count, source.count);
+    target.count += moved;
+    source.count -= moved;
+    if (source.count === 0) next[from] = null;
+    return next;
+  }
+  next[from] = target;
+  next[to] = source;
+  return next;
+}
+
 export interface GameRecipe {
   id: string;
   name: string;
