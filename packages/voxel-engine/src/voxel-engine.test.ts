@@ -8,6 +8,7 @@ import {
   canPlaceBlock,
   chunkKey,
   collidesWithWorld,
+  isShelterComplete,
   craftInventory,
   GAME_RECIPES,
   BIOMES,
@@ -28,6 +29,7 @@ import {
   getCurrentQuest,
   MAIN_QUESTS,
   normalizeNexusQuestState,
+  reconcilePersistentQuestProgress,
   getNexusNodes,
   getWorldLandmarks,
   getWeatherAt,
@@ -115,6 +117,20 @@ describe("voxel world", () => {
         x === 0 && y === 1 && z === 0 ? BlockId.Slate : BlockId.Air,
       ),
     ).toBe(true);
+  });
+
+  it("recognizes a roof and enclosing walls as a real shelter", () => {
+    const blocks = new Set<string>();
+    for (let z = -1; z <= 1; z += 1)
+      for (let x = -1; x <= 1; x += 1) blocks.add(`${x}:4:${z}`);
+    blocks.add("2:2:0");
+    blocks.add("-2:2:0");
+    blocks.add("0:2:2");
+    const lookup = (x: number, y: number, z: number) =>
+      blocks.has(`${x}:${y}:${z}`) ? BlockId.Timber : BlockId.Air;
+    expect(isShelterComplete([0.5, 1, 0.5], lookup)).toBe(true);
+    blocks.delete("0:2:2");
+    expect(isShelterComplete([0.5, 1, 0.5], lookup)).toBe(false);
   });
 
   it("culls internal faces into one compact chunk mesh", () => {
@@ -262,6 +278,24 @@ describe("Nexus world quest", () => {
     expect(restored.currentQuestLevel).toBe(1);
     expect(restored.objectiveProgress["main-01:travel"]).toBe(3);
     expect(getCurrentQuest(restored).id).toBe("main-01");
+  });
+
+  it("reconciles discoveries made before their quest unlocks", () => {
+    const restored = reconcilePersistentQuestProgress(
+      normalizeNexusQuestState({
+        currentQuestLevel: 9,
+        completedQuestIds: MAIN_QUESTS.slice(0, 8).map((quest) => quest.id),
+        discoveredBiomes: ["plains", "forest"],
+      }),
+    );
+    expect(restored.objectiveProgress["main-09:biome"]).toBe(2);
+    const advanced = applyGameplayEvent(restored, {
+      id: "persistent-reconcile",
+      type: "travel",
+      amount: 0,
+    });
+    expect(advanced.completedLevel).toBe(9);
+    expect(advanced.state.currentQuestLevel).toBe(10);
   });
 
   it("enters post-game only after completing level fifty", () => {
