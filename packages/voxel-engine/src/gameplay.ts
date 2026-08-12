@@ -131,6 +131,31 @@ export function canPlaceBlock(
   );
 }
 
+/** A lightweight, deterministic shelter rule used by the quest engine. */
+export function isShelterComplete(
+  playerPosition: readonly [number, number, number],
+  lookup: WorldBlockLookup,
+): boolean {
+  const centerX = Math.floor(playerPosition[0]);
+  const feetY = Math.floor(playerPosition[1]);
+  const centerZ = Math.floor(playerPosition[2]);
+  let roof = 0;
+  for (let z = centerZ - 1; z <= centerZ + 1; z += 1)
+    for (let x = centerX - 1; x <= centerX + 1; x += 1)
+      if (getBlockDefinition(lookup(x, feetY + 3, z)).solid) roof += 1;
+  const directions = [
+    [2, 0],
+    [-2, 0],
+    [0, 2],
+    [0, -2],
+  ] as const;
+  let walls = 0;
+  for (const [dx, dz] of directions)
+    if (getBlockDefinition(lookup(centerX + dx, feetY + 1, centerZ + dz)).solid)
+      walls += 1;
+  return roof >= 5 && walls >= 3;
+}
+
 export interface InventoryStack {
   blockId: BlockIdValue;
   count: number;
