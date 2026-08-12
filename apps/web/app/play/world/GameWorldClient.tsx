@@ -17,16 +17,17 @@ import {
   GENERATION_VERSION,
   GAME_RECIPES,
   WORLD_HEIGHT,
-  addToInventory,
   canPlaceBlock,
   chunkKey,
   collidesWithWorld,
   craftInventory,
   countInventoryItem,
+  getBlockLoot,
   getNexusNodes,
   getBlockDefinition,
   getChunkBlock,
   playerAabb,
+  pickupDroppedItem,
   raycastVoxels,
   removeFromInventory,
   normalizeNexusQuestState,
@@ -39,12 +40,14 @@ import {
   type BlockIdValue,
   type ChunkData,
   type ChunkMeshData,
+  type DroppedItemEntity,
   type GameWorldMetadata,
   type Inventory,
   type NexusQuestState,
   type PersistedChunkDelta,
   type PlayerWorldState,
   type RaycastHit,
+  type WorldEntity,
 } from "@fangyu/voxel-engine";
 import {
   getLocalChunk,
@@ -66,10 +69,12 @@ type LoadedChunk = {
   data: ChunkData;
   mesh: ChunkMeshData;
   modifications: Map<number, BlockIdValue>;
+  entities: WorldEntity[];
   dirty: boolean;
   lastTouched: number;
 };
 type RenderChunk = { key: string; revision: number; mesh: ChunkMeshData };
+type RenderDrop = DroppedItemEntity & { key: string };
 type HudState = {
   position: [number, number, number];
   chunk: [number, number];
@@ -562,6 +567,30 @@ function NexusNodeField({
   );
 }
 
+function DroppedItemField({ drops }: { drops: readonly RenderDrop[] }) {
+  return (
+    <group>
+      {drops.map((drop) => {
+        const color = getBlockDefinition(drop.itemId).color;
+        return (
+          <mesh
+            key={drop.id}
+            position={drop.position}
+            rotation={[0.3, 0.55, 0.1]}
+          >
+            <octahedronGeometry args={[0.17, 0]} />
+            <meshStandardMaterial
+              color={new THREE.Color(...color)}
+              emissive={new THREE.Color(...color)}
+              emissiveIntensity={0.18}
+            />
+          </mesh>
+        );
+      })}
+    </group>
+  );
+}
+
 function WorldRuntime({
   world,
   initialPlayer,
@@ -589,9 +618,11 @@ function WorldRuntime({
     requestedModifications = useRef(
       new Map<string, Map<number, BlockIdValue>>(),
     ),
+    requestedEntities = useRef(new Map<string, WorldEntity[]>()),
     worker = useRef<Worker | null>(null),
     requestId = useRef(0);
   const [renderChunks, setRenderChunks] = useState<RenderChunk[]>([]);
+  const [renderDrops, setRenderDrops] = useState<RenderDrop[]>([]);
   const position = useRef(new THREE.Vector3(...initialPlayer.position)),
     velocity = useRef(new THREE.Vector3()),
     yaw = useRef(initialPlayer.rotation[0]),
@@ -636,17 +667,25 @@ function WorldRuntime({
     [],
   );
 
-  const publishChunks = useCallback(
-    () =>
-      setRenderChunks(
-        Array.from(chunks.current, ([key, chunk]) => ({
-          key,
-          revision: chunk.data.revision,
-          mesh: chunk.mesh,
-        })),
-      ),
-    [],
-  );
+  const publishChunks = useCallback(() => {
+    setRenderChunks(
+      Array.from(chunks.current, ([key, chunk]) => ({
+        key,
+        revision: chunk.data.revision,
+        mesh: chunk.mesh,
+      })),
+    );
+    setRenderDrops(
+      Array.from(chunks.current, ([key, chunk]) =>
+        chunk.entities
+          .filter(
+            (entity): entity is DroppedItemEntity =>
+              entity.kind === "dropped-item",
+          )
+          .map((entity) => ({ ...entity, key })),
+      ).flat(),
+    );
+  }, []);
 
   const requestChunk = useCallback(
     async (x: number, z: number, existing?: LoadedChunk) => {
@@ -660,6 +699,10 @@ function WorldRuntime({
         ? Array.from(existing.modifications)
         : (local?.modifiedBlocks ?? []);
       requestedModifications.current.set(key, new Map(modifications));
+      requestedEntities.current.set(
+        key,
+        existing?.entities ?? local?.entities ?? [],
+      );
       worker.current?.postMessage({
         type: "generate",
         requestId: ++requestId.current,
@@ -712,6 +755,8 @@ function WorldRuntime({
           previous?.modifications ??
           requestedModifications.current.get(key) ??
           new Map(),
+        entities:
+          previous?.entities ?? requestedEntities.current.get(key) ?? [],
         dirty:
           previous?.dirty ??
           (requestedModifications.current.get(key)?.size ?? 0) > 0,
@@ -767,13 +812,23 @@ function WorldRuntime({
           BlockId.Air,
         );
         chunk.dirty = true;
-        if (world.gameMode === "survival")
-          inventory.current = addToInventory(
-            inventory.current,
-            getBlockDefinition(current.blockId).drop ?? current.blockId,
-            1,
-          );
+        if (world.gameMode === "survival") {
+          for (const loot of getBlockLoot(current.blockId))
+            chunk.entities.push({
+              id: crypto.randomUUID(),
+              kind: "dropped-item",
+              itemId: loot.itemId,
+              count: loot.count,
+              position: [
+                current.block.x + 0.5,
+                current.block.y + 0.55,
+                current.block.z + 0.5,
+              ],
+              createdAt: new Date().toISOString(),
+            });
+        }
         void requestChunk(coordinate.x, coordinate.z, chunk);
+        publishChunks();
         beep(132);
       } else if (button === 2) {
         const stack = inventory.current[selected.current];
@@ -813,7 +868,7 @@ function WorldRuntime({
         beep(196);
       }
     },
-    [beep, lookup, requestChunk, world.gameMode],
+    [beep, lookup, publishChunks, requestChunk, world.gameMode],
   );
 
   const repairNearestNode = useCallback(() => {
@@ -881,7 +936,7 @@ function WorldRuntime({
           generationVersion: GENERATION_VERSION,
           chunkVersion: 1,
           modifiedBlocks: Array.from(chunk.modifications),
-          entities: [],
+          entities: chunk.entities,
           updatedAt: now,
           revision: 0,
         };
@@ -905,6 +960,7 @@ function WorldRuntime({
               body: JSON.stringify({
                 modifiedBlocks: Array.from(chunk.modifications),
                 chunkVersion: 1,
+                entities: chunk.entities,
               }),
             },
           ),
@@ -1111,6 +1167,38 @@ function WorldRuntime({
         accumulator.current -= dt;
       }
     }
+    // Item pickup is simulation-rate limited by the HUD cadence, not a React rerender.
+    if (lastHud.current > 0.1) {
+      let changed = false;
+      for (const chunk of chunks.current.values()) {
+        const remaining: WorldEntity[] = [];
+        for (const entity of chunk.entities) {
+          if (entity.kind !== "dropped-item") {
+            remaining.push(entity);
+            continue;
+          }
+          const distance = Math.hypot(
+            entity.position[0] - position.current.x,
+            entity.position[1] - (position.current.y + 0.8),
+            entity.position[2] - position.current.z,
+          );
+          if (distance > 1.35 || dead.current) {
+            remaining.push(entity);
+            continue;
+          }
+          const picked = pickupDroppedItem(inventory.current, entity);
+          inventory.current = picked.inventory;
+          if (picked.remaining) remaining.push(picked.remaining);
+          if (picked.pickedUp > 0) {
+            changed = true;
+            chunk.dirty = true;
+            beep(355);
+          }
+        }
+        chunk.entities = remaining;
+      }
+      if (changed) publishChunks();
+    }
     camera.rotation.order = "YXZ";
     camera.rotation.set(pitch.current, yaw.current, 0);
     camera.position.set(
@@ -1187,6 +1275,7 @@ function WorldRuntime({
       {renderChunks.map((chunk) => (
         <ChunkMesh key={`${chunk.key}:${chunk.revision}`} chunk={chunk} />
       ))}
+      <DroppedItemField drops={renderDrops} />
       <SelectionOutline hit={hit.current} />
       <NexusNodeField
         nodes={nexusNodes}
