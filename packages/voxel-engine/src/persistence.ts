@@ -2,6 +2,7 @@ import type { BlockIdValue } from "./blocks";
 import type { ChunkModification } from "./world";
 import type { Inventory } from "./gameplay";
 import type { NexusQuestState } from "./quests";
+import type { WorldEntity } from "./entities";
 
 export type GameMode = "creative" | "survival";
 
@@ -31,12 +32,7 @@ export interface PersistedChunkDelta {
   generationVersion: number;
   chunkVersion: number;
   modifiedBlocks: ChunkModification[];
-  entities: Array<{
-    id: string;
-    kind: string;
-    position: readonly [number, number, number];
-    health: number;
-  }>;
+  entities: WorldEntity[];
   updatedAt: string;
   revision: number;
 }
